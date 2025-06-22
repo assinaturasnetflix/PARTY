@@ -1,7 +1,9 @@
 // controllers.js
+const cloudinary = require('cloudinary').v2; // Importa o Cloudinary diretamente aqui
 const { User, Plan, Video, Deposit, Withdrawal, Transaction } = require('./models');
 const { generateToken, sendPasswordResetEmail, sendWelcomeEmail, isNewDayForReward } = require('./utils');
-const { bcrypt, cloudinary, moment } = require('./server'); // Importa do server.js
+const { bcrypt, moment } = require('./server'); // Remove 'cloudinary' daqui
+
 
 // --- Funções de Autenticação e Usuário ---
 
