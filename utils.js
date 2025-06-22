@@ -1,5 +1,5 @@
 // utils.js
-const { jwt, nodemailer } = require('./server'); // Importa jwt e nodemailer do server.js
+const { jwt, transporter } = require('./server'); // Importa jwt e transporter do server.js
 const { User } = require('./models'); // Importa o modelo User
 const moment = require('moment-timezone'); // Importa moment-timezone
 
@@ -10,7 +10,8 @@ function generateToken(userId) {
 
 // Função para enviar email de recuperação de senha
 async function sendPasswordResetEmail(email, token) {
-    const resetUrl = `http://localhost:3000/reset-password.html?token=${token}`; // A URL real será a do frontend
+    // A URL real será a do frontend. Certifique-se de que corresponda ao seu ambiente.
+    const resetUrl = `http://localhost:3000/reset-password.html?token=${token}`; 
     const mailOptions = {
         from: process.env.EMAIL_USER,
         to: email,
@@ -38,7 +39,7 @@ async function sendPasswordResetEmail(email, token) {
     };
 
     try {
-        await nodemailer.transporter.sendMail(mailOptions);
+        await transporter.sendMail(mailOptions);
         console.log('Email de recuperação de senha enviado para:', email);
         return true;
     } catch (error) {
@@ -77,7 +78,7 @@ async function sendWelcomeEmail(email, username) {
     };
 
     try {
-        await nodemailer.transporter.sendMail(mailOptions);
+        await transporter.sendMail(mailOptions);
         console.log('Email de boas-vindas enviado para:', email);
         return true;
     } catch (error) {

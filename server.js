@@ -3,42 +3,36 @@ const express = require('express');
 const mongoose = require('mongoose');
 const dotenv = require('dotenv');
 const jwt = require('jsonwebtoken');
-const nodemailer = require('nodemailer');
+const nodemailer = require('nodemailer'); // Mantenha esta linha
 const bcrypt = require('bcryptjs');
-const moment = require('moment-timezone'); // Para lidar com fuso horário de Maputo
+const moment = require('moment-timezone');
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
-const cors = require('cors'); // Importar o pacote cors
+const cors = require('cors');
 
-dotenv.config(); // Carrega as variáveis de ambiente do .env
+dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Configuração do CORS para aceitar requisições de qualquer origem
 app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Middlewares
-app.use(express.json()); // Para parsing de JSON no corpo das requisições
-app.use(express.urlencoded({ extended: true })); // Para parsing de URL-encoded data
-
-// Conexão com o MongoDB Atlas
 mongoose.connect(process.env.MONGODB_URI)
     .then(() => console.log('Conectado ao MongoDB Atlas'))
     .catch(err => console.error('Erro ao conectar ao MongoDB Atlas:', err));
 
-// Configuração do Cloudinary
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// Configuração do Multer para upload em memória (Cloudinary fará o upload final)
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// Configuração do Nodemailer
+// Mantenha esta configuração do transporter
 const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
@@ -47,29 +41,27 @@ const transporter = nodemailer.createTransport({
     }
 });
 
-// Exportar módulos e configurações para uso em outros arquivos
+// MODIFICAÇÃO AQUI: Exporte 'transporter' diretamente, e não o módulo 'nodemailer' inteiro.
+// Mantenha as outras exportações conforme estavam.
 module.exports = {
     app,
     mongoose,
     jwt,
-    nodemailer,
+    // Antes: nodemailer,
+    transporter, // AGORA: Exporte a instância do transporter
     bcrypt,
     moment,
     upload,
-    cloudinary,
-    transporter
+    cloudinary
 };
 
-// Importar as rotas (será criado no próximo passo)
-const routes = require('./routes'); // Importa o arquivo de rotas
-app.use('/api', routes); // Prefixo para todas as rotas da API
+const routes = require('./routes');
+app.use('/api', routes);
 
-// Rota de teste
 app.get('/', (req, res) => {
     res.send('Servidor VEED online!');
 });
 
-// Iniciar o servidor
 app.listen(PORT, () => {
     console.log(`Servidor rodando na porta ${PORT}`);
 });
