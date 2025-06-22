@@ -1,114 +1,116 @@
 // routes.js
 const express = require('express');
 const router = express.Router();
-const multer = require('multer');
-const path = require('path');
-
-// Importa todos os controladores
-const {
-    protect,
-    admin,
-    registerUser,
-    loginUser,
-    getUserProfile,
-    updateUserProfile,
-    uploadUserAvatar,
-    forgotPassword,
-    resetPassword,
-    createPlan,
-    getAllPlans,
-    purchasePlan,
-    addVideo,
-    getDailyVideos,
-    markVideoAsWatched,
-    requestDeposit,
-    uploadDepositProof,
-    getUserDeposits,
-    updateDepositStatus,
-    requestWithdrawal,
-    getUserWithdrawals,
-    updateWithdrawalStatus,
-    getAllUsers,
-    getAllDeposits,
-    getAllWithdrawals,
-    toggleUserActiveStatus,
-    adjustUserBalance,
-    getAllVideos,
-    deleteVideo,
-    getAllTransactions,
-    getUserTransactions,
-    getAdminMpesaNumber,
-    setAdminMpesaNumber
-} = require('./controllers');
-
-// Configuração do Multer para upload de arquivos temporários
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, 'uploads/'); // Salva temporariamente na pasta 'uploads'
-    },
-    filename: (req, file, cb) => {
-        cb(null, `${file.fieldname}-${Date.now()}${path.extname(file.originalname)}`);
-    },
-});
-
-const upload = multer({ storage: storage });
+const controllers = require('./controllers');
+const { authenticateToken, authorizeAdmin } = require('./utils');
+const { upload } = require('./server'); // Importa o multer configurado do server.js
 
 // --- Rotas de Autenticação e Usuário ---
-router.post('/register', registerUser);
-router.post('/login', loginUser);
-router.post('/forgot-password', forgotPassword);
-router.post('/reset-password', resetPassword);
 
-// Rotas protegidas (requerem token JWT)
-router.get('/profile', protect, getUserProfile);
-router.put('/profile', protect, updateUserProfile);
-router.post('/profile/avatar', protect, upload.single('avatar'), uploadUserAvatar); // Upload de avatar
+// Cadastro de usuário
+router.post('/auth/register', controllers.registerUser);
+
+// Login de usuário
+router.post('/auth/login', controllers.loginUser);
+
+// Solicitar redefinição de senha
+router.post('/auth/request-password-reset', controllers.requestPasswordReset);
+
+// Redefinir senha
+router.post('/auth/reset-password', controllers.resetPassword);
+
+// Obter perfil do usuário (requer autenticação)
+router.get('/user/profile', authenticateToken, controllers.getUserProfile);
+
+// Atualizar perfil do usuário (requer autenticação)
+router.put('/user/profile', authenticateToken, controllers.updateProfile);
+
+// Alterar senha do usuário (requer autenticação)
+router.put('/user/change-password', authenticateToken, controllers.changePassword);
+
+// Upload de avatar do usuário (requer autenticação)
+// 'avatar' é o nome do campo no formulário que conterá o arquivo
+router.post('/user/avatar', authenticateToken, upload.single('avatar'), controllers.uploadAvatar);
+
 
 // --- Rotas de Planos ---
-router.get('/plans', getAllPlans); // Qualquer usuário pode ver os planos
-router.post('/plans/purchase', protect, purchasePlan); // Comprar plano
+
+// Criar plano (apenas admin)
+router.post('/admin/plans', authenticateToken, authorizeAdmin, controllers.createPlan);
+
+// Listar todos os planos
+router.get('/plans', controllers.listPlans);
+
+// Comprar plano (requer autenticação)
+router.post('/plans/purchase', authenticateToken, controllers.purchasePlan);
+
 
 // --- Rotas de Vídeos ---
-router.get('/videos/daily', protect, getDailyVideos); // Obter vídeos diários do usuário
-router.post('/videos/watch', protect, markVideoAsWatched); // Marcar vídeo como assistido e recompensar
+
+// Adicionar vídeo (apenas admin)
+// 'videoFile' é o nome do campo no formulário que conterá o arquivo (se for upload local)
+router.post('/admin/videos', authenticateToken, authorizeAdmin, upload.single('videoFile'), controllers.addVideo);
+
+// Listar todos os vídeos (apenas admin)
+router.get('/admin/videos', authenticateToken, authorizeAdmin, controllers.listAllVideos);
+
+// Obter vídeos do dia para o usuário (requer autenticação)
+router.get('/videos/daily', authenticateToken, controllers.getDailyVideos);
+
+// Marcar vídeo como assistido e creditar recompensa (requer autenticação)
+router.post('/videos/watch', authenticateToken, controllers.markVideoAsWatched);
+
 
 // --- Rotas de Depósito ---
-router.post('/deposits/request', protect, requestDeposit);
-router.post('/deposits/proof-upload', protect, upload.single('proof'), uploadDepositProof); // Upload de comprovante
-router.get('/deposits/history', protect, getUserDeposits); // Histórico de depósitos do usuário
-router.get('/admin/mpesa-number', protect, getAdminMpesaNumber); // Obter número M-Pesa do admin para depósitos
 
-// --- Rotas de Levantamento ---
-router.post('/withdrawals/request', protect, requestWithdrawal);
-router.get('/withdrawals/history', protect, getUserWithdrawals); // Histórico de levantamentos do usuário
+// Solicitar depósito (requer autenticação)
+// 'proof' é o campo para o comprovante (imagem ou texto)
+router.post('/deposits/request', authenticateToken, controllers.requestDeposit);
 
-// --- Rotas do Painel Administrativo (Requerem 'admin' middleware) ---
+// Listar depósitos pendentes (apenas admin)
+router.get('/admin/deposits/pending', authenticateToken, authorizeAdmin, controllers.listPendingDeposits);
 
-// Usuários
-router.get('/admin/users', protect, admin, getAllUsers);
-router.put('/admin/users/:userId/toggle-active', protect, admin, toggleUserActiveStatus); // Bloquear/Desbloquear
-router.put('/admin/users/:userId/adjust-balance', protect, admin, adjustUserBalance); // Ajustar saldo manualmente
+// Aprovar/Rejeitar depósito (apenas admin)
+router.put('/admin/deposits/:depositId/status', authenticateToken, authorizeAdmin, controllers.updateDepositStatus);
 
-// Planos
-router.post('/admin/plans', protect, admin, createPlan); // Criar plano
 
-// Vídeos
-router.post('/admin/videos', protect, admin, upload.single('videoFile'), addVideo); // Adicionar vídeo (suporta upload de arquivo)
-router.get('/admin/videos', protect, admin, getAllVideos);
-router.delete('/admin/videos/:videoId', protect, admin, deleteVideo);
+// --- Rotas de Levantamento (Saque) ---
 
-// Depósitos
-router.get('/admin/deposits', protect, admin, getAllDeposits);
-router.put('/admin/deposits/:depositId/status', protect, admin, updateDepositStatus); // Aprovar/Rejeitar depósito
-router.post('/admin/settings/mpesa-number', protect, admin, setAdminMpesaNumber); // Configurar número M-Pesa do admin
+// Solicitar levantamento (requer autenticação)
+router.post('/withdrawals/request', authenticateToken, controllers.requestWithdrawal);
 
-// Levantamentos
-router.get('/admin/withdrawals', protect, admin, getAllWithdrawals);
-router.put('/admin/withdrawals/:withdrawalId/status', protect, admin, updateWithdrawalStatus); // Aprovar/Rejeitar levantamento
+// Listar levantamentos pendentes (apenas admin)
+router.get('/admin/withdrawals/pending', authenticateToken, authorizeAdmin, controllers.listPendingWithdrawals);
 
-// Transações
-router.get('/admin/transactions', protect, admin, getAllTransactions);
-router.get('/admin/users/:userId/transactions', protect, admin, getUserTransactions);
+// Aprovar/Rejeitar levantamento (apenas admin)
+router.put('/admin/withdrawals/:withdrawalId/status', authenticateToken, authorizeAdmin, controllers.updateWithdrawalStatus);
+
+
+// --- Rotas de Referência ---
+
+// Obter dados de referência do usuário (requer autenticação)
+router.get('/user/referrals', authenticateToken, controllers.getUserReferrals);
+
+
+// --- Rotas de Admin (Painel de Controle) ---
+
+// Listar todos os usuários (apenas admin)
+router.get('/admin/users', authenticateToken, authorizeAdmin, controllers.listAllUsers);
+
+// Bloquear/Desbloquear usuário (apenas admin)
+router.put('/admin/users/:userId/toggle-active', authenticateToken, authorizeAdmin, controllers.toggleUserActiveStatus);
+
+// Ajustar saldo do usuário manualmente (apenas admin)
+router.put('/admin/users/:userId/adjust-balance', authenticateToken, authorizeAdmin, controllers.adjustUserBalance);
+
+// Listar todas as transações (apenas admin)
+router.get('/admin/transactions', authenticateToken, authorizeAdmin, controllers.getAllTransactions);
+
+
+// --- Rotas de Carteira e Histórico ---
+
+// Obter histórico de transações do usuário (requer autenticação)
+router.get('/user/transactions', authenticateToken, controllers.getUserTransactions);
 
 
 module.exports = router;

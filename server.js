@@ -1,48 +1,75 @@
 // server.js
-require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
-const cors = require('cors'); // Para permitir requisições de qualquer origem
-const path = require('path'); // Para servir arquivos estáticos e ocultar extensões
-const routes = require('./routes'); // Importa as rotas
+const dotenv = require('dotenv');
+const jwt = require('jsonwebtoken');
+const nodemailer = require('nodemailer');
+const bcrypt = require('bcryptjs');
+const moment = require('moment-timezone'); // Para lidar com fuso horário de Maputo
+const multer = require('multer');
+const cloudinary = require('cloudinary').v2;
+const cors = require('cors'); // Importar o pacote cors
+
+dotenv.config(); // Carrega as variáveis de ambiente do .env
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Conexão com o MongoDB Atlas
-mongoose.connect(process.env.MONGODB_URI)
-    .then(() => console.log('Conectado ao MongoDB Atlas com sucesso!'))
-    .catch(err => console.error('Erro ao conectar ao MongoDB Atlas:', err));
+// Configuração do CORS para aceitar requisições de qualquer origem
+app.use(cors());
 
 // Middlewares
-app.use(cors()); // Permite todas as origens
-app.use(express.json()); // Para fazer o parse de requisições JSON
-app.use(express.urlencoded({ extended: true })); // Para fazer o parse de requisições URL-encoded
+app.use(express.json()); // Para parsing de JSON no corpo das requisições
+app.use(express.urlencoded({ extended: true })); // Para parsing de URL-encoded data
 
-// Configuração para servir arquivos estáticos e ocultar extensões .html
-// O Express irá tentar servir o arquivo com a extensão .html se não encontrar sem.
-app.use(express.static(path.join(__dirname), { extensions: ['html'] }));
+// Conexão com o MongoDB Atlas
+mongoose.connect(process.env.MONGODB_URI)
+    .then(() => console.log('Conectado ao MongoDB Atlas'))
+    .catch(err => console.error('Erro ao conectar ao MongoDB Atlas:', err));
 
-// Rotas da API
-app.use('/api', routes); // Todas as rotas da API estarão sob /api
+// Configuração do Cloudinary
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+});
 
-// Rota catch-all para servir o index.html em caso de rota não encontrada (para SPAs, etc.)
-// Isso é útil para o roteamento do frontend
-app.get('*', (req, res) => {
-    // Se a requisição não for para uma rota de API e não for um arquivo estático existente,
-    // tente servir o index.html. Isso ajuda a mascarar as URLs sem a extensão.
-    if (!req.path.startsWith('/api/') && !path.extname(req.path)) {
-        res.sendFile(path.join(__dirname, 'index.html'));
-    } else {
-        // Se for um arquivo estático existente, o express.static já lidou com isso.
-        // Se for uma rota de API que não existe, ou outro tipo de requisição,
-        // retorna 404 ou deixa o Express lidar.
-        res.status(404).send('Página não encontrada');
+// Configuração do Multer para upload em memória (Cloudinary fará o upload final)
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
+
+// Configuração do Nodemailer
+const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
     }
 });
 
+// Exportar módulos e configurações para uso em outros arquivos
+module.exports = {
+    app,
+    mongoose,
+    jwt,
+    nodemailer,
+    bcrypt,
+    moment,
+    upload,
+    cloudinary,
+    transporter
+};
 
-// Inicia o servidor
+// Importar as rotas (será criado no próximo passo)
+const routes = require('./routes'); // Importa o arquivo de rotas
+app.use('/api', routes); // Prefixo para todas as rotas da API
+
+// Rota de teste
+app.get('/', (req, res) => {
+    res.send('Servidor VEED online!');
+});
+
+// Iniciar o servidor
 app.listen(PORT, () => {
     console.log(`Servidor rodando na porta ${PORT}`);
 });

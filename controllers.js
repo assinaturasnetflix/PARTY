@@ -1,272 +1,124 @@
 // controllers.js
-const bcrypt = require('bcryptjs');
-const { User, Plan, Video, Deposit, Withdrawal, Transaction, AdminSettings } = require('./models');
-const { generateToken, sendPasswordResetEmail, sendWelcomeEmail, getMaputoDate, isValidEmail } = require('./utils');
-const cloudinary = require('cloudinary').v2;
-const moment = require('moment-timezone'); // Já está incluído em utils, mas para garantir
-const crypto = require('crypto'); // Para gerar tokens de recuperação de senha
+const { User, Plan, Video, Deposit, Withdrawal, Transaction } = require('./models');
+const { generateToken, sendPasswordResetEmail, sendWelcomeEmail, isNewDayForReward } = require('./utils');
+const { bcrypt, cloudinary, moment } = require('./server'); // Importa do server.js
 
-// Configuração do Cloudinary
-cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET
-});
+// --- Funções de Autenticação e Usuário ---
 
-// Middleware de autenticação
-const protect = async (req, res, next) => {
-    let token;
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-        try {
-            token = req.headers.authorization.split(' ')[1];
-            const decoded = jwt.verify(token, process.env.JWT_SECRET);
-            req.user = await User.findById(decoded.id).select('-password');
-            if (!req.user) {
-                return res.status(401).json({ message: 'Usuário não encontrado. Token inválido.' });
-            }
-            next();
-        } catch (error) {
-            console.error('Erro de autenticação:', error);
-            res.status(401).json({ message: 'Não autorizado, token falhou ou expirou.' });
-        }
-    }
-    if (!token) {
-        res.status(401).json({ message: 'Não autorizado, nenhum token.' });
-    }
-};
-
-// Middleware de autorização para Admin
-const admin = (req, res, next) => {
-    // Para simplificar, vamos definir um usuário admin por email ou outro identificador
-    // Em uma aplicação real, você teria um campo 'role' no modelo User (ex: 'user', 'admin')
-    if (req.user && req.user.email === 'seuemailadmin@exemplo.com') { // Substitua pelo email do seu admin
-        next();
-    } else {
-        res.status(403).json({ message: 'Não autorizado como admin.' });
-    }
-};
-
-
-// --- User Controllers ---
-
-// Registrar novo usuário
-const registerUser = async (req, res) => {
+// Cadastro de Usuário
+async function registerUser(req, res) {
     const { username, email, password, referralCode } = req.body;
 
     if (!username || !email || !password) {
-        return res.status(400).json({ message: 'Por favor, preencha todos os campos.' });
-    }
-
-    if (!isValidEmail(email)) {
-        return res.status(400).json({ message: 'Formato de e-mail inválido.' });
+        return res.status(400).json({ message: 'Todos os campos são obrigatórios.' });
     }
 
     try {
-        const userExists = await User.findOne({ $or: [{ username }, { email }] });
-        if (userExists) {
-            return res.status(400).json({ message: 'Nome de usuário ou e-mail já registrado.' });
+        const existingUser = await User.findOne({ $or: [{ username }, { email }] });
+        if (existingUser) {
+            return res.status(409).json({ message: 'Nome de usuário ou e-mail já registrado.' });
         }
 
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
+        const hashedPassword = await bcrypt.hash(password, 10);
+        let referredByUserId = null;
 
-        let referredBy = null;
         if (referralCode) {
             const referrer = await User.findOne({ referralCode });
             if (referrer) {
-                referredBy = referrer._id;
+                referredByUserId = referrer._id;
             } else {
                 return res.status(400).json({ message: 'Código de referência inválido.' });
             }
         }
 
-        const newUser = await User.create({
+        const newUser = new User({
             username,
             email,
             password: hashedPassword,
-            referralCode: crypto.randomBytes(6).toString('hex').toUpperCase(), // Gera um código de referência único
-            referredBy,
+            referralCode: generateReferralCode(), // Gera um código único
+            referredBy: referredByUserId
         });
 
-        if (newUser) {
-            // Enviar email de boas-vindas
-            await sendWelcomeEmail(newUser.email, newUser.username);
+        await newUser.save();
+        await sendWelcomeEmail(newUser.email, newUser.username); // Envia email de boas-vindas
 
-            res.status(201).json({
-                _id: newUser._id,
-                username: newUser.username,
-                email: newUser.email,
-                balance: newUser.balance,
-                token: generateToken(newUser._id),
-                message: 'Usuário registrado com sucesso! Um e-mail de boas-vindas foi enviado.'
-            });
-        } else {
-            res.status(400).json({ message: 'Dados do usuário inválidos.' });
-        }
+        // Adiciona a transação de bônus de cadastro
+        const bonusTransaction = new Transaction({
+            userId: newUser._id,
+            type: 'Sign-up Bonus',
+            amount: 50,
+            status: 'Completed',
+            description: 'Bônus de cadastro'
+        });
+        await bonusTransaction.save();
 
+
+        res.status(201).json({ message: 'Usuário registrado com sucesso!', userId: newUser._id });
     } catch (error) {
-        console.error('Erro ao registrar usuário:', error);
-        res.status(500).json({ message: 'Erro do servidor ao registrar usuário.' });
+        console.error('Erro no registro de usuário:', error);
+        res.status(500).json({ message: 'Erro no servidor ao registrar usuário.', error: error.message });
     }
-};
+}
 
-// Autenticar usuário e gerar token
-const loginUser = async (req, res) => {
+// Login de Usuário
+async function loginUser(req, res) {
     const { email, password } = req.body;
 
     if (!email || !password) {
-        return res.status(400).json({ message: 'Por favor, preencha todos os campos.' });
-    }
-
-    try {
-        const user = await User.findOne({ email });
-
-        if (user && (await bcrypt.compare(password, user.password))) {
-            if (!user.isActive) {
-                return res.status(403).json({ message: 'Sua conta está bloqueada. Entre em contato com o suporte.' });
-            }
-            res.json({
-                _id: user._id,
-                username: user.username,
-                email: user.email,
-                balance: user.balance,
-                avatar: user.avatar,
-                referralCode: user.referralCode,
-                currentPlan: user.currentPlan,
-                planActivationDate: user.planActivationDate,
-                videosWatchedTodayCount: user.videosWatchedTodayCount,
-                token: generateToken(user._id),
-                message: 'Login bem-sucedido.'
-            });
-        } else {
-            res.status(401).json({ message: 'Credenciais inválidas.' });
-        }
-    } catch (error) {
-        console.error('Erro ao fazer login:', error);
-        res.status(500).json({ message: 'Erro do servidor ao fazer login.' });
-    }
-};
-
-// Obter perfil do usuário
-const getUserProfile = async (req, res) => {
-    // O usuário já está disponível em req.user pelo middleware `protect`
-    const user = req.user;
-    if (user) {
-        // Popule os dados do plano se existir
-        const userWithPlan = await User.findById(user._id)
-            .select('-password')
-            .populate('currentPlan', 'name videosPerDay durationDays dailyReward totalReward');
-
-        res.json(userWithPlan);
-    } else {
-        res.status(404).json({ message: 'Usuário não encontrado.' });
-    }
-};
-
-// Atualizar perfil do usuário
-const updateUserProfile = async (req, res) => {
-    const user = req.user; // Usuário do token
-    const { username, email, password } = req.body;
-
-    if (user) {
-        user.username = username || user.username;
-        user.email = email || user.email;
-
-        if (password) {
-            const salt = await bcrypt.genSalt(10);
-            user.password = await bcrypt.hash(password, salt);
-        }
-
-        try {
-            const updatedUser = await user.save();
-            res.json({
-                _id: updatedUser._id,
-                username: updatedUser.username,
-                email: updatedUser.email,
-                balance: updatedUser.balance,
-                avatar: updatedUser.avatar,
-                token: generateToken(updatedUser._id),
-                message: 'Perfil atualizado com sucesso.'
-            });
-        } catch (error) {
-            console.error('Erro ao atualizar perfil:', error);
-            if (error.code === 11000) { // Erro de duplicidade (email/username já existe)
-                return res.status(400).json({ message: 'Nome de usuário ou e-mail já está em uso.' });
-            }
-            res.status(500).json({ message: 'Erro do servidor ao atualizar perfil.' });
-        }
-    } else {
-        res.status(404).json({ message: 'Usuário não encontrado.' });
-    }
-};
-
-// Upload de avatar do usuário
-const uploadUserAvatar = async (req, res) => {
-    const user = req.user;
-
-    if (!req.file) {
-        return res.status(400).json({ message: 'Por favor, envie um arquivo de imagem.' });
-    }
-
-    try {
-        const result = await cloudinary.uploader.upload(req.file.path, {
-            folder: 'veed_avatars',
-            width: 150,
-            height: 150,
-            crop: 'fill'
-        });
-
-        user.avatar = result.secure_url;
-        await user.save();
-
-        // Limpar o arquivo temporário do multer
-        const fs = require('fs');
-        fs.unlinkSync(req.file.path);
-
-        res.json({
-            message: 'Avatar atualizado com sucesso!',
-            avatarUrl: user.avatar
-        });
-    } catch (error) {
-        console.error('Erro ao fazer upload do avatar:', error);
-        res.status(500).json({ message: 'Erro ao fazer upload do avatar.' });
-    }
-};
-
-// Solicitar recuperação de senha
-const forgotPassword = async (req, res) => {
-    const { email } = req.body;
-
-    if (!email || !isValidEmail(email)) {
-        return res.status(400).json({ message: 'Por favor, forneça um e-mail válido.' });
+        return res.status(400).json({ message: 'E-mail e senha são obrigatórios.' });
     }
 
     try {
         const user = await User.findOne({ email });
         if (!user) {
-            // Para segurança, não informamos se o email existe ou não
-            return res.status(200).json({ message: 'Se o e-mail estiver registrado, um link de redefinição será enviado.' });
+            return res.status(400).json({ message: 'Credenciais inválidas.' });
         }
 
-        // Gera um token único para recuperação de senha
-        const resetToken = crypto.randomBytes(32).toString('hex');
-        user.passwordResetToken = resetToken;
-        user.passwordResetExpires = Date.now() + 3600000; // 1 hora de validade
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            return res.status(400).json({ message: 'Credenciais inválidas.' });
+        }
 
-        await user.save();
+        if (!user.isActive) {
+            return res.status(403).json({ message: 'Sua conta foi bloqueada. Entre em contato com o suporte.' });
+        }
 
-        await sendPasswordResetEmail(user.email, resetToken);
-
-        res.status(200).json({ message: 'Um link de redefinição de senha foi enviado para o seu e-mail.' });
-
+        const token = generateToken(user._id);
+        res.status(200).json({ message: 'Login bem-sucedido!', token, userId: user._id, isAdmin: user.isAdmin });
     } catch (error) {
-        console.error('Erro em forgotPassword:', error);
-        res.status(500).json({ message: 'Erro do servidor ao solicitar redefinição de senha.' });
+        console.error('Erro no login de usuário:', error);
+        res.status(500).json({ message: 'Erro no servidor ao fazer login.', error: error.message });
     }
-};
+}
 
-// Redefinir senha
-const resetPassword = async (req, res) => {
+// Solicitar Redefinição de Senha
+async function requestPasswordReset(req, res) {
+    const { email } = req.body;
+
+    try {
+        const user = await User.findOne({ email });
+        if (!user) {
+            return res.status(404).json({ message: 'Usuário não encontrado com este e-mail.' });
+        }
+
+        const token = generateToken(user._id); // Reutiliza a função de token JWT para o reset
+        // Em um sistema real, este token teria uma expiração menor e seria armazenado no BD junto com o usuário para validação.
+        // Por simplicidade, estamos usando o token JWT existente.
+
+        const emailSent = await sendPasswordResetEmail(email, token);
+        if (emailSent) {
+            res.status(200).json({ message: 'Link de recuperação de senha enviado para o seu e-mail.' });
+        } else {
+            res.status(500).json({ message: 'Falha ao enviar e-mail de recuperação de senha.' });
+        }
+    } catch (error) {
+        console.error('Erro ao solicitar redefinição de senha:', error);
+        res.status(500).json({ message: 'Erro no servidor ao solicitar redefinição de senha.', error: error.message });
+    }
+}
+
+// Redefinir Senha (com validação de token)
+async function resetPassword(req, res) {
     const { token, newPassword } = req.body;
 
     if (!token || !newPassword) {
@@ -274,429 +126,490 @@ const resetPassword = async (req, res) => {
     }
 
     try {
-        const user = await User.findOne({
-            passwordResetToken: token,
-            passwordResetExpires: { $gt: Date.now() }
-        });
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const userId = decoded.userId;
 
+        const user = await User.findById(userId);
         if (!user) {
-            return res.status(400).json({ message: 'Token inválido ou expirado.' });
+            return res.status(404).json({ message: 'Usuário não encontrado.' });
         }
 
-        const salt = await bcrypt.genSalt(10);
-        user.password = await bcrypt.hash(newPassword, salt);
-        user.passwordResetToken = undefined;
-        user.passwordResetExpires = undefined;
-
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        user.password = hashedPassword;
         await user.save();
 
         res.status(200).json({ message: 'Senha redefinida com sucesso!' });
-
     } catch (error) {
-        console.error('Erro em resetPassword:', error);
-        res.status(500).json({ message: 'Erro do servidor ao redefinir senha.' });
+        if (error.name === 'TokenExpiredError') {
+            return res.status(401).json({ message: 'Token expirado. Por favor, solicite um novo link de redefinição.' });
+        }
+        if (error.name === 'JsonWebTokenError') {
+            return res.status(403).json({ message: 'Token inválido.' });
+        }
+        console.error('Erro ao redefinir senha:', error);
+        res.status(500).json({ message: 'Erro no servidor ao redefinir senha.', error: error.message });
     }
-};
+}
 
-// --- Plan Controllers ---
+// Obter Perfil do Usuário
+async function getUserProfile(req, res) {
+    try {
+        const user = await User.findById(req.userId)
+            .select('-password') // Não retorna a senha
+            .populate('currentPlan', 'name videosPerDay dailyReward'); // Popula informações do plano
 
-// Criar novo plano (Admin)
-const createPlan = async (req, res) => {
-    const { name, value, videosPerDay, durationDays, totalReward, dailyReward } = req.body;
+        if (!user) {
+            return res.status(404).json({ message: 'Usuário não encontrado.' });
+        }
 
-    if (!name || !value || !videosPerDay || !durationDays || !totalReward || !dailyReward) {
+        res.status(200).json(user);
+    } catch (error) {
+        console.error('Erro ao obter perfil do usuário:', error);
+        res.status(500).json({ message: 'Erro no servidor ao obter perfil.', error: error.message });
+    }
+}
+
+// Atualizar Perfil do Usuário (apenas e-mail por enquanto)
+async function updateProfile(req, res) {
+    const { email } = req.body; // Adicionar mais campos conforme necessário
+
+    try {
+        const user = await User.findById(req.userId);
+        if (!user) {
+            return res.status(404).json({ message: 'Usuário não encontrado.' });
+        }
+
+        if (email && email !== user.email) {
+            const emailExists = await User.findOne({ email });
+            if (emailExists && emailExists._id.toString() !== user._id.toString()) {
+                return res.status(409).json({ message: 'Este e-mail já está em uso por outro usuário.' });
+            }
+            user.email = email;
+        }
+
+        await user.save();
+        res.status(200).json({ message: 'Perfil atualizado com sucesso!' });
+    } catch (error) {
+        console.error('Erro ao atualizar perfil:', error);
+        res.status(500).json({ message: 'Erro no servidor ao atualizar perfil.', error: error.message });
+    }
+}
+
+// Alterar Senha
+async function changePassword(req, res) {
+    const { oldPassword, newPassword } = req.body;
+
+    if (!oldPassword || !newPassword) {
+        return res.status(400).json({ message: 'Senha antiga e nova senha são obrigatórias.' });
+    }
+
+    try {
+        const user = await User.findById(req.userId);
+        if (!user) {
+            return res.status(404).json({ message: 'Usuário não encontrado.' });
+        }
+
+        const isMatch = await bcrypt.compare(oldPassword, user.password);
+        if (!isMatch) {
+            return res.status(400).json({ message: 'Senha antiga incorreta.' });
+        }
+
+        user.password = await bcrypt.hash(newPassword, 10);
+        await user.save();
+
+        res.status(200).json({ message: 'Senha alterada com sucesso!' });
+    } catch (error) {
+        console.error('Erro ao alterar senha:', error);
+        res.status(500).json({ message: 'Erro no servidor ao alterar senha.', error: error.message });
+    }
+}
+
+// Upload de Avatar
+async function uploadAvatar(req, res) {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ message: 'Nenhum arquivo enviado.' });
+        }
+
+        const user = await User.findById(req.userId);
+        if (!user) {
+            return res.status(404).json({ message: 'Usuário não encontrado.' });
+        }
+
+        // Fazer upload da imagem para o Cloudinary
+        const result = await cloudinary.uploader.upload(req.file.buffer.toString('base64'), {
+            folder: 'veed_avatars',
+            resource_type: 'image'
+        });
+
+        // Atualizar o URL do avatar do usuário
+        user.avatar = result.secure_url;
+        await user.save();
+
+        res.status(200).json({ message: 'Avatar atualizado com sucesso!', avatarUrl: result.secure_url });
+    } catch (error) {
+        console.error('Erro ao fazer upload do avatar:', error);
+        res.status(500).json({ message: 'Erro no servidor ao fazer upload do avatar.', error: error.message });
+    }
+}
+
+// --- Funções de Planos ---
+
+// Criar Plano (Admin)
+async function createPlan(req, res) {
+    const { name, value, videosPerDay, durationDays } = req.body;
+
+    if (!name || !value || !videosPerDay || !durationDays) {
         return res.status(400).json({ message: 'Todos os campos do plano são obrigatórios.' });
     }
 
     try {
-        const planExists = await Plan.findOne({ name });
-        if (planExists) {
-            return res.status(400).json({ message: 'Já existe um plano com este nome.' });
+        const existingPlan = await Plan.findOne({ name });
+        if (existingPlan) {
+            return res.status(409).json({ message: 'Um plano com este nome já existe.' });
         }
 
-        const newPlan = await Plan.create({
+        // Calcular recompensa diária e total (Exemplo: 30MT/dia * 30 dias = 900MT total)
+        // A recompensa diária é a recompensa total dividida pela duração
+        const totalReturn = value * 3; // Exemplo de retorno total, pode ser uma fórmula diferente
+        const dailyReward = totalReturn / durationDays;
+
+
+        const newPlan = new Plan({
             name,
             value,
             videosPerDay,
             durationDays,
-            totalReward,
-            dailyReward
+            dailyReward,
+            totalReturn
         });
 
+        await newPlan.save();
         res.status(201).json({ message: 'Plano criado com sucesso!', plan: newPlan });
     } catch (error) {
         console.error('Erro ao criar plano:', error);
-        res.status(500).json({ message: 'Erro do servidor ao criar plano.' });
+        res.status(500).json({ message: 'Erro no servidor ao criar plano.', error: error.message });
     }
-};
+}
 
-// Obter todos os planos
-const getAllPlans = async (req, res) => {
+// Listar Planos
+async function listPlans(req, res) {
     try {
         const plans = await Plan.find({});
         res.status(200).json(plans);
     } catch (error) {
-        console.error('Erro ao obter planos:', error);
-        res.status(500).json({ message: 'Erro do servidor ao obter planos.' });
+        console.error('Erro ao listar planos:', error);
+        res.status(500).json({ message: 'Erro no servidor ao listar planos.', error: error.message });
     }
-};
+}
 
-// Comprar plano (Usuário)
-const purchasePlan = async (req, res) => {
-    const userId = req.user._id;
+// Comprar Plano
+async function purchasePlan(req, res) {
     const { planId } = req.body;
 
-    if (!planId) {
-        return res.status(400).json({ message: 'ID do plano é obrigatório.' });
-    }
-
     try {
-        const user = await User.findById(userId);
-        const plan = await Plan.findById(planId);
-
+        const user = await User.findById(req.userId);
         if (!user) {
             return res.status(404).json({ message: 'Usuário não encontrado.' });
         }
+
+        const plan = await Plan.findById(planId);
         if (!plan) {
             return res.status(404).json({ message: 'Plano não encontrado.' });
         }
-        if (user.currentPlan && user.currentPlan.toString() === planId) {
-            return res.status(400).json({ message: 'Você já possui este plano ativo.' });
-        }
+
         if (user.balance < plan.value) {
-            return res.status(400).json({ message: 'Saldo insuficiente para comprar este plano. Por favor, deposite.' });
+            return res.status(400).json({ message: 'Saldo insuficiente para comprar este plano.' });
         }
 
-        // Deduzir o valor do plano do saldo do usuário
+        if (user.currentPlan && user.planExpiresAt && moment().isBefore(user.planExpiresAt)) {
+            return res.status(400).json({ message: 'Você já tem um plano ativo. Aguarde o término ou atualize-o.' });
+        }
+
         user.balance -= plan.value;
         user.currentPlan = plan._id;
-        user.planActivationDate = getMaputoDate().toDate(); // Data de ativação do plano
-        user.videosWatchedTodayCount = 0; // Zera a contagem de vídeos para o novo plano
-        user.watchedVideosHistory = []; // Zera o histórico de vídeos assistidos para o novo plano
+        user.planExpiresAt = moment().add(plan.durationDays, 'days').toDate();
+        user.videosWatchedToday = []; // Reseta os vídeos assistidos ao ativar um novo plano
+        user.dailyRewardClaimedAt = null; // Reseta o controle de recompensa diária
 
         await user.save();
 
-        // Registrar a transação
-        await Transaction.create({
+        // Registrar transação de compra de plano
+        const planPurchaseTransaction = new Transaction({
             userId: user._id,
-            type: 'plan_purchase',
-            amount: -plan.value, // Negativo porque é uma despesa
-            description: `Compra do plano: ${plan.name}`,
-            relatedId: plan._id
+            type: 'Plan Purchase',
+            amount: -plan.value, // Valor negativo para saída de dinheiro
+            status: 'Completed',
+            relatedTo: plan._id,
+            relatedModel: 'Plan',
+            description: `Compra do plano ${plan.name}`
         });
+        await planPurchaseTransaction.save();
 
-        // Recompensa para o referenciador (10% do valor do plano)
+        // Lógica para bônus de referência (10% do valor do plano para o referenciador)
         if (user.referredBy) {
             const referrer = await User.findById(user.referredBy);
             if (referrer) {
-                const referralBonus = plan.value * 0.10;
-                referrer.balance += referralBonus;
+                const bonusAmount = plan.value * 0.10;
+                referrer.balance += bonusAmount;
                 await referrer.save();
 
-                await Transaction.create({
+                // Registrar transação de bônus de referência para o referenciador
+                const referralBonusTransaction = new Transaction({
                     userId: referrer._id,
-                    type: 'referral_plan_bonus',
-                    amount: referralBonus,
-                    description: `Bônus de 10% pela compra do plano ${plan.name} do referido ${user.username}`,
-                    relatedId: user._id
+                    type: 'Referral Bonus',
+                    amount: bonusAmount,
+                    status: 'Completed',
+                    description: `Bônus de 10% pela compra de plano do ${user.username}`
                 });
+                await referralBonusTransaction.save();
             }
         }
 
-        res.status(200).json({ message: 'Plano comprado e ativado com sucesso!', user });
-
+        res.status(200).json({ message: 'Plano comprado e ativado com sucesso!', newBalance: user.balance, plan: plan.name });
     } catch (error) {
         console.error('Erro ao comprar plano:', error);
-        res.status(500).json({ message: 'Erro do servidor ao comprar plano.' });
+        res.status(500).json({ message: 'Erro no servidor ao comprar plano.', error: error.message });
     }
-};
+}
 
-// --- Video Controllers ---
+// --- Funções de Vídeos ---
 
-// Adicionar novo vídeo (Admin)
-const addVideo = async (req, res) => {
-    const { title, description, url, duration } = req.body;
+// Adicionar Vídeo (Admin)
+async function addVideo(req, res) {
+    const { title, url, description } = req.body;
 
-    if (!title || !url || !duration) {
-        return res.status(400).json({ message: 'Título, URL e duração do vídeo são obrigatórios.' });
-    }
-
-    // Se for upload local via Multer, req.file existirá
-    let videoUrl = url;
-    if (req.file) {
-        try {
-            const result = await cloudinary.uploader.upload(req.file.path, {
-                resource_type: "video",
-                folder: "veed_videos"
-            });
-            videoUrl = result.secure_url;
-            // Limpar o arquivo temporário do multer
-            const fs = require('fs');
-            fs.unlinkSync(req.file.path);
-        } catch (uploadError) {
-            console.error('Erro ao fazer upload do vídeo para Cloudinary:', uploadError);
-            return res.status(500).json({ message: 'Erro ao fazer upload do vídeo para o Cloudinary.' });
-        }
+    if (!title || !url) {
+        return res.status(400).json({ message: 'Título e URL do vídeo são obrigatórios.' });
     }
 
     try {
-        const newVideo = await Video.create({
+        let videoUrl = url;
+        // Se houver um arquivo e não for uma URL externa (poderia ser feito upload local via Multer para Cloudinary)
+        if (req.file) {
+            const result = await cloudinary.uploader.upload(req.file.buffer.toString('base64'), {
+                resource_type: 'video',
+                folder: 'veed_videos'
+            });
+            videoUrl = result.secure_url;
+        }
+
+        const newVideo = new Video({
             title,
-            description,
             url: videoUrl,
-            duration,
-            uploadedBy: req.user._id // Quem está subindo o vídeo (admin)
+            description
         });
+
+        await newVideo.save();
         res.status(201).json({ message: 'Vídeo adicionado com sucesso!', video: newVideo });
     } catch (error) {
         console.error('Erro ao adicionar vídeo:', error);
-        res.status(500).json({ message: 'Erro do servidor ao adicionar vídeo.' });
+        res.status(500).json({ message: 'Erro no servidor ao adicionar vídeo.', error: error.message });
     }
-};
+}
 
-// Obter vídeos diários para o usuário
-const getDailyVideos = async (req, res) => {
-    const user = await User.findById(req.user._id).populate('currentPlan');
-
-    if (!user) {
-        return res.status(404).json({ message: 'Usuário não encontrado.' });
-    }
-    if (!user.currentPlan) {
-        return res.status(400).json({ message: 'Você não tem um plano ativo. Por favor, compre um plano para assistir vídeos.' });
-    }
-
-    const today = getMaputoDate().startOf('day');
-    const videosWatchedToday = user.videosWatchedTodayCount;
-    const planVideosLimit = user.currentPlan.videosPerDay;
-
-    // Verificar se a data do último claim de recompensa é diferente de hoje (significa que é um novo dia)
-    const lastClaimDate = user.lastRewardClaimDate ? moment(user.lastRewardClaimDate).tz("Africa/Maputo").startOf('day') : null;
-
-    if (!lastClaimDate || !lastClaimDate.isSame(today, 'day')) {
-        // É um novo dia, reiniciar a contagem e redefinir vídeos a serem assistidos
-        user.videosWatchedTodayCount = 0;
-        // Opcional: Limpar o histórico de vídeos assistidos para a seleção diária para que eles possam ser selecionados novamente.
-        // Se a regra é "não podem ser repetidos em outros dias DENTRO DO MESMO PLANO", precisamos de uma lógica mais sofisticada ou resetar aqui.
-        // Por enquanto, vou considerar que a cada 0h, novos vídeos são selecionados.
-        // Uma abordagem melhor para "não repetir no mesmo plano" seria usar `watchedVideosHistory` com um filtro de data.
-        // Para a regra "não podem ser repetidos em outros dias dentro do mesmo plano", vamos garantir que a seleção não inclua os do history.
-        // Mas a cada 0h, a lista de "vídeos que podem ser escolhidos" é renovada.
-        // Para simplificar agora, a cada 0h, a seleção é "novos vídeos não assistidos hoje".
-        // A lógica de "não repetir NUNCA dentro do plano" é mais complexa e envolveria resetar o history apenas na compra de um novo plano ou quando o plano termina.
-        // Vamos manter o `watchedVideosHistory` acumulativo para evitar repetições globais enquanto o plano está ativo.
-        await user.save();
-    }
-
-
-    if (videosWatchedToday >= planVideosLimit) {
-        return res.status(200).json({ message: 'Você já assistiu a todos os seus vídeos diários. Volte amanhã para mais!', videos: [] });
-    }
-
+// Listar Vídeos Disponíveis (Admin)
+async function listAllVideos(req, res) {
     try {
-        // Obter IDs dos vídeos já assistidos pelo usuário (durante o período do plano atual)
-        const watchedVideoIds = user.watchedVideosHistory
-            .filter(entry => moment(entry.watchedOn).isSameOrAfter(moment(user.planActivationDate).startOf('day'))) // Apenas vídeos assistidos desde a ativação do plano
-            .map(entry => entry.videoId);
-
-        // Encontrar vídeos ativos que ainda não foram assistidos pelo usuário
-        const availableVideos = await Video.find({
-            _id: { $nin: watchedVideoIds }, // Excluir vídeos já assistidos
-            isActive: true
-        });
-
-        // Embaralhar e selecionar `planVideosLimit` vídeos únicos
-        const shuffledVideos = availableVideos.sort(() => 0.5 - Math.random());
-        const videosForToday = shuffledVideos.slice(0, planVideosLimit - videosWatchedToday);
-
-        if (videosForToday.length === 0 && videosWatchedToday < planVideosLimit) {
-            return res.status(200).json({ message: 'No momento, não há novos vídeos disponíveis para você. Tente novamente mais tarde!', videos: [] });
-        }
-
-        res.status(200).json({
-            message: `Aqui estão seus ${videosForToday.length} vídeos diários restantes.`,
-            videos: videosForToday,
-            videosRemainingToday: planVideosLimit - videosWatchedToday - videosForToday.length // Não deve ser negativo
-        });
-
+        const videos = await Video.find({});
+        res.status(200).json(videos);
     } catch (error) {
-        console.error('Erro ao obter vídeos diários:', error);
-        res.status(500).json({ message: 'Erro do servidor ao obter vídeos diários.' });
+        console.error('Erro ao listar todos os vídeos:', error);
+        res.status(500).json({ message: 'Erro no servidor ao listar vídeos.', error: error.message });
     }
-};
+}
 
-// Registrar vídeo como assistido e dar recompensa
-const markVideoAsWatched = async (req, res) => {
-    const userId = req.user._id;
-    const { videoId } = req.body;
-
-    if (!videoId) {
-        return res.status(400).json({ message: 'ID do vídeo é obrigatório.' });
-    }
-
+// Obter Vídeos do Dia para o Usuário
+async function getDailyVideos(req, res) {
     try {
-        const user = await User.findById(userId).populate('currentPlan');
-        const video = await Video.findById(videoId);
-
+        const user = await User.findById(req.userId).populate('currentPlan');
         if (!user) {
             return res.status(404).json({ message: 'Usuário não encontrado.' });
         }
+        if (!user.currentPlan || !user.planExpiresAt || moment().isAfter(user.planExpiresAt)) {
+            return res.status(400).json({ message: 'Você não tem um plano ativo ou seu plano expirou. Por favor, compre um plano.' });
+        }
+
+        const videosPerDay = user.currentPlan.videosPerDay;
+
+        // Resetar vídeos assistidos e permitir novas recompensas se for um novo dia em Maputo
+        if (isNewDayForReward(user.dailyRewardClaimedAt)) {
+            user.videosWatchedToday = [];
+            user.dailyRewardClaimedAt = null; // Reseta para que a recompensa só seja dada após assistir os vídeos
+            await user.save();
+        }
+
+        const watchedVideoIdsToday = user.videosWatchedToday.map(v => v.videoId);
+
+        // Encontrar vídeos que não foram assistidos pelo usuário ATÉ HOJE
+        const availableVideos = await Video.find({
+            _id: { $nin: watchedVideoIdsToday }, // Exclui vídeos já assistidos hoje
+            isAvailable: true // Apenas vídeos ativos
+        });
+
+        // Filtrar vídeos que já foram assistidos em dias anteriores dentro do plano ativo
+        // Este é um desafio complexo sem um campo de "histórico total" por vídeo e plano.
+        // Por simplicidade, vamos garantir que os vídeos assistidos hoje não se repitam nos próximos dias.
+        // Uma solução mais robusta exigiria um array de `allWatchedVideos` no User ou um modelo `WatchedVideoHistory`.
+
+        let videosForToday = [];
+        // Selecionar aleatoriamente `videosPerDay` vídeos únicos dos disponíveis
+        if (availableVideos.length <= videosPerDay) {
+            videosForToday = availableVideos; // Se não houver vídeos suficientes, retorna todos
+        } else {
+            const shuffled = availableVideos.sort(() => 0.5 - Math.random());
+            videosForToday = shuffled.slice(0, videosPerDay);
+        }
+
+        if (videosForToday.length === 0 && user.videosWatchedToday.length < videosPerDay) {
+            return res.status(200).json({ message: 'Nenhum vídeo novo disponível no momento. Volte amanhã!', videos: [] });
+        }
+        
+        // Se o usuário já assistiu todos os vídeos do dia (e a lista está completa), ele não deve ver mais vídeos.
+        if (user.videosWatchedToday.length >= videosPerDay) {
+            return res.status(200).json({ message: 'Você já assistiu todos os seus vídeos hoje. Volte amanhã para mais!', videos: [] });
+        }
+
+
+        res.status(200).json({
+            message: `Aqui estão seus ${videosForToday.length} vídeos para hoje. Assista para ganhar!`,
+            videos: videosForToday,
+            videosRemaining: videosPerDay - user.videosWatchedToday.length,
+            currentDailyReward: user.currentPlan.dailyReward // Recompensa por vídeo assistido
+        });
+
+    } catch (error) {
+        console.error('Erro ao obter vídeos do dia:', error);
+        res.status(500).json({ message: 'Erro no servidor ao obter vídeos do dia.', error: error.message });
+    }
+}
+
+// Marcar Vídeo como Assistido e Distribuir Recompensa
+async function markVideoAsWatched(req, res) {
+    const { videoId } = req.body;
+
+    try {
+        const user = await User.findById(req.userId).populate('currentPlan');
+        if (!user) {
+            return res.status(404).json({ message: 'Usuário não encontrado.' });
+        }
+        if (!user.currentPlan || !user.planExpiresAt || moment().isAfter(user.planExpiresAt)) {
+            return res.status(400).json({ message: 'Você não tem um plano ativo ou seu plano expirou. Por favor, compre um plano.' });
+        }
+
+        const video = await Video.findById(videoId);
         if (!video) {
             return res.status(404).json({ message: 'Vídeo não encontrado.' });
         }
-        if (!user.currentPlan) {
-            return res.status(400).json({ message: 'Você não tem um plano ativo.' });
+
+        const videosPerDay = user.currentPlan.videosPerDay;
+        const dailyRewardPerVideo = user.currentPlan.dailyReward / videosPerDay; // Recompensa por video individual
+
+        // Verifica se o vídeo já foi assistido hoje
+        const alreadyWatchedToday = user.videosWatchedToday.some(v => v.videoId.equals(videoId));
+        if (alreadyWatchedToday) {
+            return res.status(400).json({ message: 'Você já assistiu este vídeo hoje. Por favor, selecione outro.' });
         }
 
-        const today = getMaputoDate().startOf('day');
-        const lastClaimDate = user.lastRewardClaimDate ? moment(user.lastRewardClaimDate).tz("Africa/Maputo").startOf('day') : null;
-
-        // Se é um novo dia, zerar a contagem e atualizar lastRewardClaimDate
-        if (!lastClaimDate || !lastClaimDate.isSame(today, 'day')) {
-            user.videosWatchedTodayCount = 0;
-            user.lastRewardClaimDate = today.toDate(); // Atualiza a data do último claim
+        // Verifica se o usuário já assistiu o número máximo de vídeos hoje
+        if (user.videosWatchedToday.length >= videosPerDay) {
+            return res.status(400).json({ message: 'Você já assistiu todos os vídeos permitidos para hoje. Volte amanhã!' });
         }
 
-        // Verificar se o usuário já assistiu a este vídeo hoje (ou durante o plano atual para evitar repetições no histórico)
-        const alreadyWatchedToday = user.dailyVideosWatched.some(item =>
-            item.videoId.toString() === videoId && moment(item.watchedAt).tz("Africa/Maputo").isSame(today, 'day')
-        );
+        // Adicionar vídeo ao histórico de vídeos assistidos hoje
+        user.videosWatchedToday.push({ videoId: video._id, watchedAt: new Date() });
+        user.balance += dailyRewardPerVideo; // Adiciona recompensa ao saldo
 
-        const alreadyWatchedInPlan = user.watchedVideosHistory.some(item =>
-            item.videoId.toString() === videoId && moment(item.watchedOn).isSameOrAfter(moment(user.planActivationDate).startOf('day'))
-        );
-
-        if (alreadyWatchedToday || alreadyWatchedInPlan) {
-            return res.status(400).json({ message: 'Você já assistiu a este vídeo ou ele já foi contado para hoje.' });
+        // Verifica se todos os vídeos do dia foram assistidos para marcar a recompensa diária como "reclamada"
+        if (user.videosWatchedToday.length >= videosPerDay) {
+            user.dailyRewardClaimedAt = moment().tz('Africa/Maputo').startOf('day').toDate();
         }
-
-        if (user.videosWatchedTodayCount >= user.currentPlan.videosPerDay) {
-            return res.status(400).json({ message: 'Você já assistiu o número máximo de vídeos permitidos pelo seu plano hoje.' });
-        }
-
-        // Adicionar vídeo ao histórico diário e geral
-        user.dailyVideosWatched.push({ videoId, watchedAt: Date.now() });
-        user.watchedVideosHistory.push({ videoId, watchedOn: Date.now() });
-        user.videosWatchedTodayCount += 1;
-
-        // Adicionar recompensa ao saldo do usuário
-        const videoReward = user.currentPlan.dailyReward / user.currentPlan.videosPerDay;
-        user.balance += videoReward;
 
         await user.save();
 
-        // Registrar a transação da recompensa
-        await Transaction.create({
+        // Registrar transação de recompensa diária por vídeo
+        const rewardTransaction = new Transaction({
             userId: user._id,
-            type: 'video_reward',
-            amount: videoReward,
-            description: `Recompensa por assistir vídeo: ${video.title}`,
-            relatedId: video._id
+            type: 'Daily Reward',
+            amount: dailyRewardPerVideo,
+            status: 'Completed',
+            description: `Recompensa por assistir ao vídeo "${video.title}"`
         });
-
-        // Recompensa para o referenciador (5% da renda diária do indicado)
-        if (user.referredBy) {
-            const referrer = await User.findById(user.referredBy);
-            if (referrer) {
-                const referralDailyBonus = videoReward * 0.05; // 5% do que o referido ganha por este vídeo
-                referrer.balance += referralDailyBonus;
-                await referrer.save();
-
-                await Transaction.create({
-                    userId: referrer._id,
-                    type: 'referral_daily_bonus',
-                    amount: referralDailyBonus,
-                    description: `Bônus de 5% da recompensa diária do referido ${user.username} pelo vídeo ${video.title}`,
-                    relatedId: user._id
-                });
-            }
-        }
+        await rewardTransaction.save();
 
         res.status(200).json({
-            message: 'Vídeo assistido e recompensa creditada com sucesso!',
+            message: 'Vídeo marcado como assistido e recompensa creditada!',
             newBalance: user.balance,
-            videosWatchedToday: user.videosWatchedTodayCount
+            videosWatchedTodayCount: user.videosWatchedToday.length
         });
-
     } catch (error) {
         console.error('Erro ao marcar vídeo como assistido:', error);
-        res.status(500).json({ message: 'Erro do servidor ao marcar vídeo como assistido.' });
+        res.status(500).json({ message: 'Erro no servidor ao marcar vídeo como assistido.', error: error.message });
     }
-};
+}
 
-// --- Deposit Controllers ---
 
-// Solicitar depósito
-const requestDeposit = async (req, res) => {
-    const userId = req.user._id;
-    const { amount, mpesaNumber, transactionId, proof } = req.body; // 'proof' pode ser texto ou URL de imagem
+// --- Funções de Depósito ---
 
-    if (!amount || !mpesaNumber || !proof) {
-        return res.status(400).json({ message: 'Todos os campos de depósito são obrigatórios.' });
+// Solicitar Depósito (Usuário)
+async function requestDeposit(req, res) {
+    const { amount, method, proof } = req.body; // 'proof' pode ser URL da imagem ou texto de transação
+
+    if (!amount || !method || !proof) {
+        return res.status(400).json({ message: 'Todos os campos são obrigatórios para o depósito.' });
     }
-    if (isNaN(amount) || amount <= 0) {
-        return res.status(400).json({ message: 'O valor do depósito deve ser um número positivo.' });
+    if (amount <= 0) {
+        return res.status(400).json({ message: 'O valor do depósito deve ser positivo.' });
     }
 
     try {
-        const newDeposit = await Deposit.create({
-            userId,
+        const newDeposit = new Deposit({
+            userId: req.userId,
             amount,
-            mpesaNumber,
-            transactionId: transactionId || 'Não Informado',
+            method,
             proof,
-            status: 'pending'
+            status: 'Pending'
         });
 
-        res.status(201).json({ message: 'Depósito solicitado com sucesso! Aguardando aprovação.', deposit: newDeposit });
+        await newDeposit.save();
+
+        // Registrar transação como pendente
+        const depositTransaction = new Transaction({
+            userId: req.userId,
+            type: 'Deposit',
+            amount: amount,
+            status: 'Pending',
+            relatedTo: newDeposit._id,
+            relatedModel: 'Deposit',
+            description: `Depósito pendente via ${method}`
+        });
+        await depositTransaction.save();
+
+        res.status(201).json({ message: 'Solicitação de depósito enviada com sucesso! Aguardando aprovação do administrador.' });
     } catch (error) {
         console.error('Erro ao solicitar depósito:', error);
-        res.status(500).json({ message: 'Erro do servidor ao solicitar depósito.' });
+        res.status(500).json({ message: 'Erro no servidor ao solicitar depósito.', error: error.message });
     }
-};
+}
 
-// Upload de comprovante de depósito (se for imagem)
-const uploadDepositProof = async (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ message: 'Por favor, envie um arquivo de imagem como comprovante.' });
-    }
-
+// Listar Depósitos Pendentes (Admin)
+async function listPendingDeposits(req, res) {
     try {
-        const result = await cloudinary.uploader.upload(req.file.path, {
-            folder: 'veed_proofs',
-        });
-
-        // Limpar o arquivo temporário do multer
-        const fs = require('fs');
-        fs.unlinkSync(req.file.path);
-
-        res.status(200).json({
-            message: 'Comprovante enviado com sucesso!',
-            proofUrl: result.secure_url
-        });
+        const pendingDeposits = await Deposit.find({ status: 'Pending' }).populate('userId', 'username email');
+        res.status(200).json(pendingDeposits);
     } catch (error) {
-        console.error('Erro ao fazer upload do comprovante:', error);
-        res.status(500).json({ message: 'Erro ao fazer upload do comprovante.' });
+        console.error('Erro ao listar depósitos pendentes:', error);
+        res.status(500).json({ message: 'Erro no servidor ao listar depósitos pendentes.', error: error.message });
     }
-};
+}
 
-// Obter histórico de depósitos do usuário
-const getUserDeposits = async (req, res) => {
-    try {
-        const deposits = await Deposit.find({ userId: req.user._id }).sort({ createdAt: -1 });
-        res.status(200).json(deposits);
-    } catch (error) {
-        console.error('Erro ao obter depósitos do usuário:', error);
-        res.status(500).json({ message: 'Erro do servidor ao obter depósitos.' });
-    }
-};
-
-// Aprovar/Rejeitar depósito (Admin)
-const updateDepositStatus = async (req, res) => {
+// Aprovar/Rejeitar Depósito (Admin)
+async function updateDepositStatus(req, res) {
     const { depositId } = req.params;
-    const { status } = req.body; // 'approved' ou 'rejected'
+    const { status } = req.body; // 'Approved' ou 'Rejected'
 
-    if (!['approved', 'rejected'].includes(status)) {
-        return res.status(400).json({ message: 'Status inválido. Deve ser "approved" ou "rejected".' });
+    if (!['Approved', 'Rejected'].includes(status)) {
+        return res.status(400).json({ message: 'Status inválido. Use "Approved" ou "Rejected".' });
     }
 
     try {
@@ -704,112 +617,123 @@ const updateDepositStatus = async (req, res) => {
         if (!deposit) {
             return res.status(404).json({ message: 'Depósito não encontrado.' });
         }
-        if (deposit.status !== 'pending') {
-            return res.status(400).json({ message: `Este depósito já foi ${deposit.status}.` });
+        if (deposit.status !== 'Pending') {
+            return res.status(400).json({ message: `Depósito já foi ${deposit.status.toLowerCase()}.` });
         }
 
         deposit.status = status;
-        deposit.approvedBy = req.user._id; // Admin que aprovou
-        deposit.approvedAt = Date.now();
+        deposit.approvedBy = req.userId; // ID do admin
+        deposit.approvedAt = new Date();
+        await deposit.save();
 
-        if (status === 'approved') {
+        // Atualiza a transação relacionada
+        const transaction = await Transaction.findOne({ relatedTo: deposit._id });
+
+        if (status === 'Approved') {
             const user = await User.findById(deposit.userId);
             if (user) {
                 user.balance += deposit.amount;
                 await user.save();
-
-                // Registrar a transação
-                await Transaction.create({
-                    userId: user._id,
-                    type: 'deposit',
-                    amount: deposit.amount,
-                    description: `Depósito aprovado (Ref: ${deposit._id})`,
-                    relatedId: deposit._id
-                });
-            } else {
-                console.warn(`Usuário do depósito ${depositId} não encontrado.`);
+                if (transaction) {
+                    transaction.status = 'Completed';
+                    transaction.description = `Depósito aprovado via ${deposit.method}`;
+                    await transaction.save();
+                }
+            }
+        } else { // Rejected
+            if (transaction) {
+                transaction.status = 'Failed';
+                transaction.description = `Depósito rejeitado via ${deposit.method}`;
+                await transaction.save();
             }
         }
-        await deposit.save();
-        res.status(200).json({ message: `Depósito ${status} com sucesso!`, deposit });
+
+        res.status(200).json({ message: `Depósito ${status.toLowerCase()} com sucesso!`, deposit });
     } catch (error) {
         console.error('Erro ao atualizar status do depósito:', error);
-        res.status(500).json({ message: 'Erro do servidor ao atualizar status do depósito.' });
+        res.status(500).json({ message: 'Erro no servidor ao atualizar status do depósito.', error: error.message });
     }
-};
+}
 
+// --- Funções de Levantamento (Saque) ---
 
-// --- Withdrawal Controllers ---
+// Solicitar Levantamento (Usuário)
+async function requestWithdrawal(req, res) {
+    const { amount, method, accountNumber } = req.body;
 
-// Solicitar levantamento (Usuário)
-const requestWithdrawal = async (req, res) => {
-    const userId = req.user._id;
-    const { amount, mpesaNumber } = req.body;
-
-    if (!amount || !mpesaNumber) {
-        return res.status(400).json({ message: 'Todos os campos de levantamento são obrigatórios.' });
+    if (!amount || !method || !accountNumber) {
+        return res.status(400).json({ message: 'Todos os campos são obrigatórios para o levantamento.' });
     }
-    if (isNaN(amount) || amount <= 0) {
-        return res.status(400).json({ message: 'O valor do levantamento deve ser um número positivo.' });
+    if (amount <= 0) {
+        return res.status(400).json({ message: 'O valor do levantamento deve ser positivo.' });
     }
 
     try {
-        const user = await User.findById(userId);
+        const user = await User.findById(req.userId);
         if (!user) {
             return res.status(404).json({ message: 'Usuário não encontrado.' });
         }
 
+        // Bônus de cadastro só pode ser sacado com plano ativo
+        if (user.balance >= 50 && user.currentPlan === null) {
+            return res.status(400).json({ message: 'O bônus de cadastro de 50MT só pode ser sacado após a compra de um plano ativo.' });
+        }
+        // Verificar se o valor solicitado é menor ou igual ao saldo disponível
         if (user.balance < amount) {
             return res.status(400).json({ message: 'Saldo insuficiente para este levantamento.' });
         }
 
-        // Criar a solicitação de levantamento
-        const newWithdrawal = await Withdrawal.create({
-            userId,
-            amount,
-            mpesaNumber,
-            status: 'pending'
-        });
-
-        // Deduzir o valor do saldo do usuário imediatamente (ou após aprovação, dependendo da regra de negócio)
-        // Por enquanto, vamos deduzir imediatamente, e o admin faz o envio manual
+        // Subtrai o valor do saque do saldo do usuário imediatamente
         user.balance -= amount;
         await user.save();
 
-        // Registrar a transação
-        await Transaction.create({
-            userId: user._id,
-            type: 'withdrawal',
-            amount: -amount, // Negativo porque é uma saída
-            description: `Solicitação de levantamento (Ref: ${newWithdrawal._id})`,
-            relatedId: newWithdrawal._id
+        const newWithdrawal = new Withdrawal({
+            userId: req.userId,
+            amount,
+            method,
+            accountNumber,
+            status: 'Pending'
         });
 
-        res.status(201).json({ message: 'Solicitação de levantamento enviada com sucesso! Aguardando aprovação e envio manual.', withdrawal: newWithdrawal });
+        await newWithdrawal.save();
+
+        // Registrar transação de levantamento como pendente
+        const withdrawalTransaction = new Transaction({
+            userId: req.userId,
+            type: 'Withdrawal',
+            amount: -amount, // Valor negativo para saída de dinheiro
+            status: 'Pending',
+            relatedTo: newWithdrawal._id,
+            relatedModel: 'Withdrawal',
+            description: `Levantamento pendente via ${method} para ${accountNumber}`
+        });
+        await withdrawalTransaction.save();
+
+        res.status(201).json({ message: 'Solicitação de levantamento enviada com sucesso! Aguardando aprovação do administrador.', newBalance: user.balance });
     } catch (error) {
         console.error('Erro ao solicitar levantamento:', error);
-        res.status(500).json({ message: 'Erro do servidor ao solicitar levantamento.' });
+        res.status(500).json({ message: 'Erro no servidor ao solicitar levantamento.', error: error.message });
     }
-};
+}
 
-// Obter histórico de levantamentos do usuário
-const getUserWithdrawals = async (req, res) => {
+// Listar Levantamentos Pendentes (Admin)
+async function listPendingWithdrawals(req, res) {
     try {
-        const withdrawals = await Withdrawal.find({ userId: req.user._id }).sort({ createdAt: -1 });
-        res.status(200).json(withdrawals);
+        const pendingWithdrawals = await Withdrawal.find({ status: 'Pending' }).populate('userId', 'username email');
+        res.status(200).json(pendingWithdrawals);
     } catch (error) {
-        console.error('Erro ao obter levantamentos do usuário:', error);
-        res.status(500).json({ message: 'Erro do servidor ao obter levantamentos.' });
+        console.error('Erro ao listar levantamentos pendentes:', error);
+        res.status(500).json({ message: 'Erro no servidor ao listar levantamentos pendentes.', error: error.message });
     }
-};
+}
 
-// Aprovar/Rejeitar levantamento (Admin)
-const updateWithdrawalStatus = async (req, res) => {
+// Aprovar/Rejeitar Levantamento (Admin)
+async function updateWithdrawalStatus(req, res) {
     const { withdrawalId } = req.params;
-    const { status } = req.body; // 'approved' ou 'rejected'
+    const { status } = req.body; // 'Approved' ou 'Rejected'
 
-    if (!['approved', 'rejected'].includes(status)) {
-        return res.status(400).json({ message: 'Status inválido. Deve ser "approved" ou "rejected".' });
+    if (!['Approved', 'Rejected'].includes(status)) {
+        return res.status(400).json({ message: 'Status inválido. Use "Approved" ou "Rejected".' });
     }
 
     try {
@@ -817,84 +741,119 @@ const updateWithdrawalStatus = async (req, res) => {
         if (!withdrawal) {
             return res.status(404).json({ message: 'Levantamento não encontrado.' });
         }
-        if (withdrawal.status !== 'pending') {
-            return res.status(400).json({ message: `Este levantamento já foi ${withdrawal.status}.` });
+        if (withdrawal.status !== 'Pending') {
+            return res.status(400).json({ message: `Levantamento já foi ${withdrawal.status.toLowerCase()}.` });
         }
 
         withdrawal.status = status;
-        withdrawal.approvedBy = req.user._id; // Admin que aprovou
-        withdrawal.approvedAt = Date.now();
+        withdrawal.processedBy = req.userId; // ID do admin
+        withdrawal.processedAt = new Date();
+        await withdrawal.save();
 
-        if (status === 'rejected') {
-            // Se o levantamento for rejeitado, o valor deve ser devolvido ao saldo do usuário
+        // Atualiza a transação relacionada
+        const transaction = await Transaction.findOne({ relatedTo: withdrawal._id });
+
+        if (status === 'Rejected') {
+            // Se rejeitado, devolve o dinheiro para o saldo do usuário
             const user = await User.findById(withdrawal.userId);
             if (user) {
                 user.balance += withdrawal.amount;
                 await user.save();
-
-                // Registrar a transação de estorno
-                await Transaction.create({
-                    userId: user._id,
-                    type: 'manual_adjustment', // Ou 'withdrawal_reversal'
-                    amount: withdrawal.amount,
-                    description: `Estorno de levantamento rejeitado (Ref: ${withdrawal._id})`,
-                    relatedId: withdrawal._id
-                });
-            } else {
-                console.warn(`Usuário do levantamento ${withdrawalId} não encontrado para estorno.`);
+            }
+            if (transaction) {
+                transaction.status = 'Failed';
+                transaction.description = `Levantamento rejeitado. Valor devolvido.`;
+                await transaction.save();
+            }
+        } else { // Approved
+            if (transaction) {
+                transaction.status = 'Completed';
+                transaction.description = `Levantamento aprovado via ${withdrawal.method} para ${withdrawal.accountNumber}`;
+                await transaction.save();
             }
         }
-        await withdrawal.save();
-        res.status(200).json({ message: `Levantamento ${status} com sucesso!`, withdrawal });
+
+        res.status(200).json({ message: `Levantamento ${status.toLowerCase()} com sucesso!`, withdrawal });
     } catch (error) {
         console.error('Erro ao atualizar status do levantamento:', error);
-        res.status(500).json({ message: 'Erro do servidor ao atualizar status do levantamento.' });
+        res.status(500).json({ message: 'Erro no servidor ao atualizar status do levantamento.', error: error.message });
     }
-};
+}
+
+// --- Funções de Referência ---
+
+// Obter Dados de Referência do Usuário
+async function getUserReferrals(req, res) {
+    try {
+        const user = await User.findById(req.userId);
+        if (!user) {
+            return res.status(404).json({ message: 'Usuário não encontrado.' });
+        }
+
+        // Encontrar usuários referidos por este usuário
+        const referredUsers = await User.find({ referredBy: user._id }).select('username currentPlan balance');
+
+        // Calcular ganhos de referência (exemplo: soma dos bônus de plano e renda diária dos referidos)
+        let totalReferralEarnings = 0;
+        for (const referred of referredUsers) {
+            // Poderia buscar transações de 'Referral Bonus' para um cálculo mais preciso
+            const referredTransactions = await Transaction.find({
+                userId: referred._id,
+                type: { $in: ['Plan Purchase', 'Daily Reward'] },
+                status: 'Completed'
+            });
+
+            for (const trans of referredTransactions) {
+                if (trans.type === 'Plan Purchase') {
+                    // Ganho de 10% do valor do plano (se aplicável ao momento da compra)
+                    const plan = await Plan.findById(trans.relatedTo);
+                    if (plan) {
+                        totalReferralEarnings += plan.value * 0.10;
+                    }
+                } else if (trans.type === 'Daily Reward') {
+                    // Ganho de 5% da renda diária do indicado
+                    totalReferralEarnings += trans.amount * 0.05;
+                }
+            }
+        }
 
 
-// --- Admin Panel Controllers ---
+        res.status(200).json({
+            referralCode: user.referralCode,
+            referredUsers: referredUsers.map(r => ({
+                username: r.username,
+                currentPlan: r.currentPlan ? r.currentPlan.name : 'Nenhum',
+                balance: r.balance
+            })),
+            totalReferralEarnings: totalReferralEarnings // Precisa ser mais preciso
+        });
 
-// Obter lista de todos os usuários (Admin)
-const getAllUsers = async (req, res) => {
+    } catch (error) {
+        console.error('Erro ao obter dados de referência:', error);
+        res.status(500).json({ message: 'Erro no servidor ao obter dados de referência.', error: error.message });
+    }
+}
+
+// --- Funções de Admin (Painel) ---
+
+// Listar Todos os Usuários (Admin)
+async function listAllUsers(req, res) {
     try {
         const users = await User.find({}).select('-password').populate('currentPlan', 'name');
         res.status(200).json(users);
     } catch (error) {
-        console.error('Erro ao obter todos os usuários:', error);
-        res.status(500).json({ message: 'Erro do servidor ao obter usuários.' });
+        console.error('Erro ao listar todos os usuários:', error);
+        res.status(500).json({ message: 'Erro no servidor ao listar usuários.', error: error.message });
     }
-};
+}
 
-// Obter todos os depósitos (Admin)
-const getAllDeposits = async (req, res) => {
-    try {
-        const deposits = await Deposit.find({}).populate('userId', 'username email').sort({ createdAt: -1 });
-        res.status(200).json(deposits);
-    } catch (error) {
-        console.error('Erro ao obter todos os depósitos:', error);
-        res.status(500).json({ message: 'Erro do servidor ao obter depósitos.' });
-    }
-};
-
-// Obter todos os levantamentos (Admin)
-const getAllWithdrawals = async (req, res) => {
-    try {
-        const withdrawals = await Withdrawal.find({}).populate('userId', 'username email').sort({ createdAt: -1 });
-        res.status(200).json(withdrawals);
-    } catch (error) {
-        console.error('Erro ao obter todos os levantamentos:', error);
-        res.status(500).json({ message: 'Erro do servidor ao obter levantamentos.' });
-    }
-};
-
-// Bloquear/Desbloquear usuário (Admin)
-const toggleUserActiveStatus = async (req, res) => {
+// Bloquear/Desbloquear Usuário (Admin)
+async function toggleUserActiveStatus(req, res) {
     const { userId } = req.params;
     const { isActive } = req.body; // true para desbloquear, false para bloquear
 
     if (typeof isActive !== 'boolean') {
-        return res.status(400).json({ message: 'O status isActive deve ser um booleano.' });
+        return res.status(400).json({ message: 'Status de ativação inválido.' });
     }
 
     try {
@@ -908,21 +867,18 @@ const toggleUserActiveStatus = async (req, res) => {
 
         res.status(200).json({ message: `Usuário ${isActive ? 'desbloqueado' : 'bloqueado'} com sucesso!`, user });
     } catch (error) {
-        console.error('Erro ao mudar status do usuário:', error);
-        res.status(500).json({ message: 'Erro do servidor ao mudar status do usuário.' });
+        console.error('Erro ao bloquear/desbloquear usuário:', error);
+        res.status(500).json({ message: 'Erro no servidor ao bloquear/desbloquear usuário.', error: error.message });
     }
-};
+}
 
-// Adicionar/Remover saldo manualmente (Admin)
-const adjustUserBalance = async (req, res) => {
+// Adicionar/Remover Saldo Manualmente (Admin)
+async function adjustUserBalance(req, res) {
     const { userId } = req.params;
-    const { amount, type, description } = req.body; // type: 'add' ou 'remove'
+    const { amount, operation, description } = req.body; // operation: 'add' ou 'subtract'
 
-    if (!amount || isNaN(amount) || amount <= 0) {
-        return res.status(400).json({ message: 'Valor inválido. Deve ser um número positivo.' });
-    }
-    if (!['add', 'remove'].includes(type)) {
-        return res.status(400).json({ message: 'Tipo de ajuste inválido. Deve ser "add" ou "remove".' });
+    if (!amount || amount <= 0 || !operation || !['add', 'subtract'].includes(operation)) {
+        return res.status(400).json({ message: 'Valor e operação válidos são obrigatórios.' });
     }
 
     try {
@@ -932,153 +888,97 @@ const adjustUserBalance = async (req, res) => {
         }
 
         let finalAmount = amount;
-        let transactionDescription = `Ajuste manual de saldo (${type === 'add' ? 'Adição' : 'Remoção'}): ${description || 'N/A'}`;
+        let transactionType = 'Admin Adjustment';
 
-        if (type === 'add') {
-            user.balance += finalAmount;
-        } else { // 'remove'
-            user.balance -= finalAmount;
-            finalAmount = -finalAmount; // Para registrar na transação como negativo
+        if (operation === 'add') {
+            user.balance += amount;
+            transactionType = 'Admin Add Balance';
+        } else if (operation === 'subtract') {
+            if (user.balance < amount) {
+                return res.status(400).json({ message: 'Saldo insuficiente para remover este valor.' });
+            }
+            user.balance -= amount;
+            finalAmount = -amount; // Para registrar na transação como negativo
+            transactionType = 'Admin Subtract Balance';
         }
-
         await user.save();
 
-        // Registrar a transação
-        await Transaction.create({
+        // Registrar transação de ajuste manual
+        const adjustmentTransaction = new Transaction({
             userId: user._id,
-            type: 'manual_adjustment',
+            type: transactionType,
             amount: finalAmount,
-            description: transactionDescription,
-            relatedId: req.user._id // Quem fez o ajuste (admin)
+            status: 'Completed',
+            description: description || `Ajuste manual de saldo pelo admin.`
         });
+        await adjustmentTransaction.save();
 
-        res.status(200).json({ message: `Saldo do usuário ajustado com sucesso! Novo saldo: ${user.balance}`, user });
+        res.status(200).json({ message: `Saldo do usuário ${operation === 'add' ? 'adicionado' : 'removido'} com sucesso!`, newBalance: user.balance });
     } catch (error) {
         console.error('Erro ao ajustar saldo do usuário:', error);
-        res.status(500).json({ message: 'Erro do servidor ao ajustar saldo.' });
+        res.status(500).json({ message: 'Erro no servidor ao ajustar saldo.', error: error.message });
     }
-};
+}
 
-// Obter lista de todos os vídeos (Admin)
-const getAllVideos = async (req, res) => {
-    try {
-        const videos = await Video.find({});
-        res.status(200).json(videos);
-    } catch (error) {
-        console.error('Erro ao obter vídeos:', error);
-        res.status(500).json({ message: 'Erro do servidor ao obter vídeos.' });
-    }
-};
-
-// Excluir vídeo (Admin)
-const deleteVideo = async (req, res) => {
-    const { videoId } = req.params;
-    try {
-        const video = await Video.findByIdAndDelete(videoId);
-        if (!video) {
-            return res.status(404).json({ message: 'Vídeo não encontrado.' });
-        }
-        res.status(200).json({ message: 'Vídeo excluído com sucesso!' });
-    } catch (error) {
-        console.error('Erro ao excluir vídeo:', error);
-        res.status(500).json({ message: 'Erro do servidor ao excluir vídeo.' });
-    }
-};
-
-// Obter todas as transações (Admin)
-const getAllTransactions = async (req, res) => {
+// Listar todas as transações (Admin)
+async function getAllTransactions(req, res) {
     try {
         const transactions = await Transaction.find({})
             .populate('userId', 'username email')
-            .sort({ createdAt: -1 });
+            .sort({ createdAt: -1 }); // Mais recentes primeiro
         res.status(200).json(transactions);
     } catch (error) {
-        console.error('Erro ao obter transações:', error);
-        res.status(500).json({ message: 'Erro do servidor ao obter transações.' });
+        console.error('Erro ao listar todas as transações:', error);
+        res.status(500).json({ message: 'Erro no servidor ao listar transações.', error: error.message });
     }
-};
+}
 
-// Obter transações de um usuário específico (Admin)
-const getUserTransactions = async (req, res) => {
-    const { userId } = req.params;
+// --- Funções de Carteira e Histórico ---
+
+// Obter Histórico de Transações do Usuário
+async function getUserTransactions(req, res) {
     try {
-        const transactions = await Transaction.find({ userId })
-            .sort({ createdAt: -1 });
+        const transactions = await Transaction.find({ userId: req.userId })
+            .sort({ createdAt: -1 }); // Mais recentes primeiro
         res.status(200).json(transactions);
     } catch (error) {
-        console.error('Erro ao obter transações do usuário:', error);
-        res.status(500).json({ message: 'Erro do servidor ao obter transações do usuário.' });
+        console.error('Erro ao obter histórico de transações:', error);
+        res.status(500).json({ message: 'Erro no servidor ao obter histórico de transações.', error: error.message });
     }
-};
+}
 
-
-// Obter saldo M-Pesa/e-Mola do admin (da AdminSettings)
-const getAdminMpesaNumber = async (req, res) => {
-    try {
-        const setting = await AdminSettings.findOne({ settingName: 'mpesaNumber' });
-        if (!setting) {
-            return res.status(404).json({ message: 'Número M-Pesa do admin não configurado.' });
-        }
-        res.status(200).json({ mpesaNumber: setting.settingValue });
-    } catch (error) {
-        console.error('Erro ao obter número M-Pesa do admin:', error);
-        res.status(500).json({ message: 'Erro do servidor ao obter número M-Pesa do admin.' });
-    }
-};
-
-// Configurar/Atualizar saldo M-Pesa/e-Mola do admin (Admin)
-const setAdminMpesaNumber = async (req, res) => {
-    const { mpesaNumber } = req.body;
-    if (!mpesaNumber) {
-        return res.status(400).json({ message: 'Número M-Pesa é obrigatório.' });
-    }
-
-    try {
-        const setting = await AdminSettings.findOneAndUpdate(
-            { settingName: 'mpesaNumber' },
-            { settingValue: mpesaNumber, description: 'Número M-Pesa/e-Mola para depósitos de usuários.' },
-            { upsert: true, new: true } // upsert: cria se não existir, new: retorna o documento atualizado
-        );
-        res.status(200).json({ message: 'Número M-Pesa do admin configurado/atualizado com sucesso!', setting });
-    } catch (error) {
-        console.error('Erro ao configurar número M-Pesa do admin:', error);
-        res.status(500).json({ message: 'Erro do servidor ao configurar número M-Pesa do admin.' });
-    }
-};
+// Gerar Código de Referência (Função auxiliar interna)
+function generateReferralCode() {
+    return Math.random().toString(36).substring(2, 8).toUpperCase(); // Gera um código alfanumérico curto
+}
 
 
 module.exports = {
-    protect,
-    admin,
     registerUser,
     loginUser,
-    getUserProfile,
-    updateUserProfile,
-    uploadUserAvatar,
-    forgotPassword,
+    requestPasswordReset,
     resetPassword,
+    getUserProfile,
+    updateProfile,
+    changePassword,
+    uploadAvatar,
     createPlan,
-    getAllPlans,
+    listPlans,
     purchasePlan,
     addVideo,
+    listAllVideos,
     getDailyVideos,
     markVideoAsWatched,
     requestDeposit,
-    uploadDepositProof,
-    getUserDeposits,
+    listPendingDeposits,
     updateDepositStatus,
     requestWithdrawal,
-    getUserWithdrawals,
+    listPendingWithdrawals,
     updateWithdrawalStatus,
-    getAllUsers,
-    getAllDeposits,
-    getAllWithdrawals,
+    getUserReferrals,
+    listAllUsers,
     toggleUserActiveStatus,
     adjustUserBalance,
-    getAllVideos,
-    deleteVideo,
     getAllTransactions,
-    getUserTransactions,
-    getAdminMpesaNumber,
-    setAdminMpesaNumber
+    getUserTransactions
 };
