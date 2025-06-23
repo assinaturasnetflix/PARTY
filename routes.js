@@ -1,74 +1,112 @@
 // routes.js
+
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
 
-// Importar os controladores (iremos criá-los a seguir)
-const userController = require('./controllers'); // Iremos exportar as funções de controllers neste objeto
-const adminController = require('./controllers');
-const videoController = require('./controllers');
-const depositController = require('./controllers');
-const withdrawalController = require('./controllers');
-const authMiddleware = require('./utils'); // Para verificação de token JWT e isAdmin
-const uploadMiddleware = require('./utils'); // Para upload de arquivos com Multer e Cloudinary
+// Importação das configurações de armazenamento do Cloudinary
+const { imageStorage, videoStorage } = require('./utils');
 
-// --- Rotas de Autenticação e Usuário ---
-router.post('/register', userController.registerUser);
-router.post('/login', userController.loginUser);
-router.post('/forgot-password', userController.forgotPassword);
-router.post('/reset-password/:token', userController.resetPassword);
+// Importação dos controllers (que ainda vamos criar)
+const authController = require('./controllers/authController');
+const userController = require('./controllers/userController');
+const planController = require('./controllers/planController');
+const videoController = require('./controllers/videoController');
+const walletController = require('./controllers/walletController');
+const referralController = require('./controllers/referralController');
 
-// Rotas protegidas por autenticação (requerem um token JWT válido)
-router.use(authMiddleware.authenticateToken); // Todas as rotas abaixo desta linha exigirão autenticação
+// Controllers do Admin
+const adminDashboardController = require('./controllers/admin/dashboardController');
+const adminUserController = require('./controllers/admin/userController');
+const adminPlanController = require('./controllers/admin/planController');
+const adminVideoController = require('./controllers/admin/videoController');
+const adminFinanceController = require('./controllers/admin/financeController');
 
-router.get('/profile', userController.getUserProfile);
-router.put('/profile', uploadMiddleware.uploadAvatar, userController.updateUserProfile); // Com upload de avatar
-router.put('/change-password', userController.changePassword);
-router.get('/wallet', userController.getWalletDetails);
-router.get('/transactions', userController.getUserTransactions);
-router.get('/daily-videos', userController.getDailyVideos);
-router.post('/watch-video/:videoId', userController.watchVideo); // Marcar vídeo como assistido
-router.get('/referrals', userController.getReferralInfo);
+// Importação dos middlewares de autenticação (que também vamos criar)
+const { protect, admin } = require('./middleware/authMiddleware');
+
+// Configuração do Multer para upload de arquivos
+const uploadImage = multer({ storage: imageStorage });
+const uploadVideo = multer({ storage: videoStorage });
+
+/*
+==========================================================================================
+                                      ROTAS PÚBLICAS
+==========================================================================================
+*/
+
+// --- Autenticação ---
+router.post('/auth/register', authController.registerUser);
+router.post('/auth/login', authController.loginUser);
+router.post('/auth/forgot-password', authController.forgotPassword);
+router.put('/auth/reset-password/:resetToken', authController.resetPassword);
+
+// --- Planos (visualização pública) ---
+router.get('/plans', planController.getAllActivePlans);
 
 
-// --- Rotas de Depósito ---
-router.post('/deposit', uploadMiddleware.uploadProof, depositController.requestDeposit); // Com upload de comprovante
-router.get('/deposits/user', depositController.getUserDeposits); // Histórico de depósitos do usuário
+/*
+==========================================================================================
+                                ROTAS PROTEGIDAS (USUÁRIO LOGADO)
+==========================================================================================
+*/
 
-// --- Rotas de Levantamento (Saque) ---
-router.post('/withdraw', withdrawalController.requestWithdrawal);
-router.get('/withdrawals/user', withdrawalController.getUserWithdrawals); // Histórico de levantamentos do usuário
+// --- Perfil do Usuário ---
+router.get('/user/me', protect, userController.getUserProfile);
+router.put('/user/update-details', protect, userController.updateUserDetails);
+router.put('/user/update-password', protect, userController.updateUserPassword);
+router.post('/user/avatar', protect, uploadImage.single('avatar'), userController.uploadAvatar);
 
-// --- Rotas de Planos (usuário) ---
-router.get('/plans', userController.getAllPlans);
-router.post('/plan/purchase', userController.purchasePlan);
+// --- Vídeos ---
+router.get('/videos/daily', protect, videoController.getDailyVideos);
+router.post('/videos/watch/:videoId', protect, videoController.markVideoAsWatched);
+
+// --- Compra de Planos ---
+router.post('/plans/buy/:planId', protect, planController.buyPlan);
+
+// --- Carteira e Transações ---
+router.get('/wallet', protect, walletController.getWalletDetails);
+router.post('/wallet/deposit', protect, uploadImage.single('proofImage'), walletController.requestDeposit); // 'proofImage' é o name do input no form
+router.post('/wallet/withdraw', protect, walletController.requestWithdrawal);
+
+// --- Sistema de Referência ---
+router.get('/referrals', protect, referralController.getReferralData);
 
 
-// --- Rotas do Administrador (protegidas por autenticação e verificação de isAdmin) ---
-router.use(authMiddleware.authorizeAdmin); // Todas as rotas abaixo desta linha exigirão que o usuário seja admin
+/*
+==========================================================================================
+                                ROTAS DE ADMINISTRADOR (ADMIN)
+==========================================================================================
+*/
 
-router.post('/admin/plans', adminController.createPlan);
-router.put('/admin/plans/:planId', adminController.updatePlan);
-router.delete('/admin/plans/:planId', adminController.deletePlan);
+// --- Painel de Controle (Dashboard) ---
+router.get('/admin/stats', protect, admin, adminDashboardController.getDashboardStats);
 
-router.post('/admin/videos', uploadMiddleware.uploadVideo, adminController.addVideo); // Com upload de vídeo
-router.put('/admin/videos/:videoId', adminController.updateVideo);
-router.delete('/admin/videos/:videoId', adminController.deleteVideo);
-router.get('/admin/videos', adminController.getAllVideos); // Listar todos os vídeos
+// --- Gerenciamento de Usuários (Admin) ---
+router.get('/admin/users', protect, admin, adminUserController.getAllUsers);
+router.get('/admin/users/:userId', protect, admin, adminUserController.getUserById);
+router.put('/admin/users/:userId/toggle-block', protect, admin, adminUserController.toggleBlockUser);
+router.post('/admin/users/:userId/manual-balance', protect, admin, adminUserController.manualBalanceUpdate); // Adiciona ou remove saldo
 
-router.get('/admin/deposits/pending', adminController.getPendingDeposits);
-router.put('/admin/deposits/:depositId/approve', adminController.approveDeposit);
-router.put('/admin/deposits/:depositId/reject', adminController.rejectDeposit);
+// --- Gerenciamento de Planos (Admin) ---
+router.post('/admin/plans', protect, admin, adminPlanController.createPlan);
+router.get('/admin/plans/all', protect, admin, adminPlanController.getAllPlans); // Rota para admin ver todos, incluindo inativos
+router.put('/admin/plans/:planId', protect, admin, adminPlanController.updatePlan);
+router.delete('/admin/plans/:planId', protect, admin, adminPlanController.deletePlan);
 
-router.get('/admin/withdrawals/pending', adminController.getPendingWithdrawals);
-router.put('/admin/withdrawals/:withdrawalId/approve', adminController.approveWithdrawal);
-router.put('/admin/withdrawals/:withdrawalId/reject', adminController.rejectWithdrawal);
+// --- Gerenciamento de Vídeos (Admin) ---
+router.post('/admin/videos/upload', protect, admin, uploadVideo.single('video'), adminVideoController.uploadVideo); // 'video' é o name do input no form
+router.get('/admin/videos', protect, admin, adminVideoController.getAllVideos);
+router.delete('/admin/videos/:videoId', protect, admin, adminVideoController.deleteVideo);
 
-router.get('/admin/users', adminController.getAllUsers);
-router.get('/admin/users/:userId', adminController.getUserDetails);
-router.put('/admin/users/:userId/block', adminController.blockUser);
-router.put('/admin/users/:userId/unblock', adminController.unblockUser);
-router.post('/admin/users/:userId/add-balance', adminController.addBalanceToUser);
-router.post('/admin/users/:userId/remove-balance', adminController.removeBalanceFromUser);
-router.get('/admin/dashboard-stats', adminController.getDashboardStats); // Estatísticas gerais do painel
+// --- Gerenciamento Financeiro (Admin) ---
+router.get('/admin/deposits', protect, admin, adminFinanceController.getDeposits); // Pode filtrar por status (ex: /deposits?status=pending)
+router.put('/admin/deposits/:depositId/approve', protect, admin, adminFinanceController.approveDeposit);
+router.put('/admin/deposits/:depositId/reject', protect, admin, adminFinanceController.rejectDeposit);
+
+router.get('/admin/withdrawals', protect, admin, adminFinanceController.getWithdrawals); // Pode filtrar por status
+router.put('/admin/withdrawals/:withdrawalId/approve', protect, admin, adminFinanceController.approveWithdrawal);
+router.put('/admin/withdrawals/:withdrawalId/reject', protect, admin, adminFinanceController.rejectWithdrawal);
+
 
 module.exports = router;
