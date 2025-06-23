@@ -1,4 +1,4 @@
-// server.js (VERSÃO COM CORS CORRIGIDO)
+// server.js
 
 // -----------------------------------------------
 // 1. IMPORTAÇÃO DE MÓDULOS E CONFIGURAÇÃO INICIAL
@@ -16,15 +16,18 @@ const app = express();
 // 2. CONFIGURAÇÃO DE MIDDLEWARES
 // -----------------------------------------------
 
-// --- CORREÇÃO AQUI ---
-// Configuração explícita do CORS para aceitar qualquer origem e os métodos/cabeçalhos necessários.
+// Configuração explícita e robusta do CORS
 const corsOptions = {
   origin: '*', // Permite que qualquer frontend aceda à sua API.
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'], // Permite todos os métodos HTTP comuns.
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'], // Permite todos os métodos HTTP necessários.
   allowedHeaders: ['Content-Type', 'Authorization'], // Permite os cabeçalhos que estamos a usar.
 };
+
+// Habilita o pre-flight request para todas as rotas. Essencial para POST, PUT, etc.
+app.options('*', cors(corsOptions));
+
+// Usa a configuração CORS para todas as outras requisições.
 app.use(cors(corsOptions));
-// --- FIM DA CORREÇÃO ---
 
 
 // Middleware para analisar o corpo das requisições como JSON
