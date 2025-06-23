@@ -1,4 +1,4 @@
-// routes.js
+// routes.js (CORRIGIDO)
 
 const express = require('express');
 const router = express.Router();
@@ -7,23 +7,24 @@ const multer = require('multer');
 // Importação das configurações de armazenamento do Cloudinary
 const { imageStorage, videoStorage } = require('./utils');
 
-// Importação dos controllers (que ainda vamos criar)
-const authController = require('./controllers/authController');
-const userController = require('./controllers/userController');
-const planController = require('./controllers/planController');
-const videoController = require('./controllers/videoController');
-const walletController = require('./controllers/walletController');
-const referralController = require('./controllers/referralController');
+// --- CORREÇÃO AQUI ---
+// Importamos TODOS os controllers de um único arquivo, desestruturando o objeto exportado.
+const {
+    authController,
+    userController,
+    planController,
+    videoController,
+    walletController,
+    referralController,
+    adminDashboardController,
+    adminUserController,
+    adminPlanController,
+    adminVideoController,
+    adminFinanceController
+} = require('./controllers'); // Nota: Node.js entende que isso se refere a controllers.js
 
-// Controllers do Admin
-const adminDashboardController = require('./controllers/admin/dashboardController');
-const adminUserController = require('./controllers/admin/userController');
-const adminPlanController = require('./controllers/admin/planController');
-const adminVideoController = require('./controllers/admin/videoController');
-const adminFinanceController = require('./controllers/admin/financeController');
-
-// Importação dos middlewares de autenticação (que também vamos criar)
-const { protect, admin } = require('./middleware/authMiddleware');
+// Importação dos middlewares de autenticação do arquivo middleware.js na raiz
+const { protect, admin } = require('./middleware');
 
 // Configuração do Multer para upload de arquivos
 const uploadImage = multer({ storage: imageStorage });
