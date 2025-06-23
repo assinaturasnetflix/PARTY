@@ -391,22 +391,47 @@ const checkAndResetDailyVideos = async (user) => {
         await user.save();
     }
 };
+// Em controllers.js, substitua o videoController inteiro por este:
+
 const videoController = {
+    /**
+     * @desc    Obter os vídeos do dia para o usuário
+     * @route   GET /api/videos/daily
+     * @access  Private
+     */
     getDailyVideos: asyncHandler(async (req, res) => {
         const user = await User.findById(req.user.id).populate('activePlan.planId');
+
+        // --- LÓGICA PARA USUÁRIOS SEM PLANO ---
+        // Se o usuário não tiver um plano ativo, mostra vídeos de amostra
         if (!user.activePlan || !user.activePlan.planId || user.activePlan.expiryDate < new Date()) {
-            res.status(403);
-            throw new Error('Você não tem um plano ativo para assistir vídeos.');
+            const sampleVideos = await Video.aggregate([{ $sample: { size: 3 } }]); // Pega 3 vídeos aleatórios
+            return res.json({
+                canWatch: false, // Flag para o frontend saber que não pode assistir
+                message: "Você precisa de um plano para assistir e ganhar recompensas.",
+                videos: sampleVideos
+            });
         }
+        // --- FIM DA LÓGICA PARA USUÁRIOS SEM PLANO ---
+
+
+        // A lógica abaixo só executa para usuários COM plano ativo
         await checkAndResetDailyVideos(user);
+        
         const plan = user.activePlan.planId;
         const videosToWatchCount = plan.dailyVideoLimit - user.dailyWatchedVideos.length;
 
         if (videosToWatchCount <= 0) {
-            return res.json({ message: "Você já assistiu todos os vídeos de hoje.", videos: [] });
+            return res.json({
+                canWatch: true, // Adicionado para consistência
+                message: "Você já assistiu todos os vídeos de hoje.",
+                videos: []
+            });
         }
+
         const watchedHistoryIds = user.fullWatchedHistory || [];
         const availableVideos = await Video.find({ _id: { $nin: watchedHistoryIds } }).limit(videosToWatchCount);
+        
         if (availableVideos.length < videosToWatchCount) {
              const alreadyWatchedTodayIds = user.dailyWatchedVideos.map(v => v.videoId);
              const moreVideos = await Video.aggregate([
@@ -415,34 +440,55 @@ const videoController = {
              ]);
              availableVideos.push(...moreVideos);
         }
-        res.json({ videos: availableVideos });
+        
+        res.json({
+            canWatch: true, // Adicionado para consistência
+            videos: availableVideos
+        });
     }),
+
+    /**
+     * @desc    Marcar um vídeo como assistido e receber recompensa
+     * @route   POST /api/videos/watch/:videoId
+     * @access  Private
+     */
     markVideoAsWatched: asyncHandler(async (req, res) => {
+        // Esta função permanece exatamente a mesma de antes, sem alterações.
         const { videoId } = req.params;
         const user = await User.findById(req.user.id).populate('activePlan.planId');
+
         if (!user.activePlan || !user.activePlan.planId || user.activePlan.expiryDate < new Date()) {
             res.status(403);
             throw new Error('Você não tem um plano ativo.');
         }
+        
         await checkAndResetDailyVideos(user);
+
         const plan = user.activePlan.planId;
+
         if (user.dailyWatchedVideos.length >= plan.dailyVideoLimit) {
             res.status(400);
             throw new Error('Você já atingiu seu limite de vídeos por hoje.');
         }
+
         const alreadyWatchedToday = user.dailyWatchedVideos.some(v => v.videoId.toString() === videoId);
         if (alreadyWatchedToday) {
             res.status(400);
             throw new Error('A recompensa para este vídeo já foi creditada hoje.');
         }
+
         const session = await mongoose.startSession();
         session.startTransaction();
+
         try {
             const rewardAmount = plan.rewardPerVideo;
+
             user.dailyWatchedVideos.push({ videoId });
             user.fullWatchedHistory.addToSet(videoId);
+
             user.balance += rewardAmount;
             await user.save({ session });
+            
             await Transaction.create([{
                 user: user._id,
                 amount: rewardAmount,
@@ -450,12 +496,14 @@ const videoController = {
                 description: `Recompensa por assistir vídeo.`,
                 referenceId: videoId
             }], { session });
+
             if (user.referredBy) {
                 const referrer = await User.findById(user.referredBy);
                 if (referrer) {
                     const dailyBonus = rewardAmount * 0.05;
                     referrer.balance += dailyBonus;
                     await referrer.save({ session });
+                    
                     await Transaction.create([{
                         user: referrer._id,
                         amount: dailyBonus,
@@ -465,8 +513,10 @@ const videoController = {
                     }], { session });
                 }
             }
+
             await session.commitTransaction();
             res.json({ message: 'Recompensa creditada!', newBalance: user.balance });
+
         } catch (error) {
             await session.abortTransaction();
             throw error;
@@ -524,7 +574,7 @@ const referralController = {
         ]);
         const referredUsers = await User.find({ referredBy: userId }).select('username email createdAt');
         res.json({
-            referralLink: `${process.env.FRONTEND_URL}/register.html?ref=${user.referralCode}`,
+            referralLink: `${process.env.FRONTEND_URL}/register?ref=${user.referralCode}`,
             referralCode: user.referralCode,
             totalEarnings: earnings.length > 0 ? earnings[0].total : 0,
             referredUsersCount: referredUsers.length,
