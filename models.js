@@ -29,14 +29,14 @@ const userSchema = new Schema({
         required: [true, 'A senha é obrigatória.']
     },
     avatar: {
-        url: { type: String, default: '' }, // URL da imagem no Cloudinary
+        url: { type: String, default: '' },
         cloudinary_id: { type: String, default: '' }
     },
 
     // Carteira e Plano
     balance: {
         type: Number,
-        default: 50.00 // Bônus de cadastro de 50MT
+        default: 50.00
     },
     activePlan: {
         planId: { type: Schema.Types.ObjectId, ref: 'Plan', default: null },
@@ -50,7 +50,7 @@ const userSchema = new Schema({
         type: String,
         unique: true,
         required: true,
-        default: () => crypto.randomBytes(6).toString('hex').slice(0, 8) // Gera um código de 8 caracteres
+        default: () => crypto.randomBytes(6).toString('hex').slice(0, 8)
     },
     referredBy: {
         type: Schema.Types.ObjectId,
@@ -64,7 +64,7 @@ const userSchema = new Schema({
         date: { type: Date, default: Date.now }
     }],
     lastVideoReset: {
-        type: Date, // Armazena a data do último reset para controle diário
+        type: Date,
         default: null
     },
     fullWatchedHistory: [{
@@ -72,6 +72,11 @@ const userSchema = new Schema({
         ref: 'Video'
     }],
 
+    // Campo para identificar administradores
+    isAdmin: {
+        type: Boolean,
+        default: false // Por defeito, ninguém é admin.
+    },
 
     // Status e Segurança
     isBlocked: {
