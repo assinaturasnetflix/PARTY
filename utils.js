@@ -9,51 +9,49 @@ const dotenv = require('dotenv');
 dotenv.config();
 
 // ----------------------------------------
-// 1. CONFIGURAÇÃO DO CLOUDINARY (VIA ENV)
+// 1. CONFIGURAÇÃO DO CLOUDINARY (ABORDAGEM EXPLÍCITA)
 // ----------------------------------------
-// Não configuramos mais o Cloudinary com chaves "hardcoded".
-// O SDK do Cloudinary é inteligente e irá configurar-se automaticamente
-// se encontrar a variável de ambiente CLOUDINARY_URL, que configurámos no Render.
-if (!process.env.CLOUDINARY_URL) {
-    console.error("ERRO FATAL: A variável de ambiente CLOUDINARY_URL não está definida.");
-    // Num ambiente de produção, isto poderia parar a aplicação para evitar erros inesperados.
-    // process.exit(1); 
-}
+// Esta é a mudança principal. Em vez de depender de uma URL,
+// usamos as 3 variáveis de ambiente separadas para forçar a configuração.
+// Isto é mais robusto e menos propenso a erros.
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+  secure: true // É boa prática forçar o uso de https
+});
 
-// Configuração de armazenamento para IMAGENS (avatares, comprovantes)
-// Esta configuração agora usa o objeto 'cloudinary' que foi autoconfigurado acima.
+// Adicionamos este log para depuração.
+// Ele irá aparecer nos logs do Render e mostrar-nos-á a configuração que está a ser usada.
+// A api_secret deverá aparecer como '******' por segurança, mas a presença dela confirma a leitura.
+console.log('[DEBUG] Configuração do Cloudinary utilizada:', cloudinary.config());
+
+
+// O resto do arquivo permanece igual, usando o 'cloudinary' que foi configurado acima.
 const imageStorage = new CloudinaryStorage({
     cloudinary: cloudinary,
     params: {
-        folder: 'veed_images', // Pasta no Cloudinary para organizar as imagens
+        folder: 'veed_images',
         allowed_formats: ['jpg', 'png', 'jpeg'],
-        transformation: [{ width: 500, height: 500, crop: 'limit' }] // Redimensiona para um tamanho razoável
+        transformation: [{ width: 500, height: 500, crop: 'limit' }]
     }
 });
 
-// Configuração de armazenamento para VÍDEOS
 const videoStorage = new CloudinaryStorage({
     cloudinary: cloudinary,
     params: {
-        folder: 'veed_videos', // Pasta no Cloudinary para organizar os vídeos
+        folder: 'veed_videos',
         resource_type: 'video',
         allowed_formats: ['mp4', 'mov', 'avi'],
     }
 });
 
-
-// ----------------------------------------
-// 2. GERAÇÃO DE TOKEN JWT
-// ----------------------------------------
+// Funções de token e email
 const generateToken = (id) => {
     return jwt.sign({ id }, process.env.JWT_SECRET, {
-        expiresIn: '30d' // O token expira em 30 dias
+        expiresIn: '30d'
     });
 };
-
-// ----------------------------------------
-// 3. CONFIGURAÇÃO E ENVIO DE E-MAILS (NODEMAILER)
-// ----------------------------------------
 
 const transporter = nodemailer.createTransport({
     service: 'gmail',
@@ -122,10 +120,6 @@ const createPasswordResetEmailHTML = (resetURL) => {
     `;
 };
 
-
-// ----------------------------------------
-// EXPORTAÇÃO DOS MÓDULOS
-// ----------------------------------------
 module.exports = {
     generateToken,
     sendEmail,
