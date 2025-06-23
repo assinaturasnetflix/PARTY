@@ -1170,5 +1170,7 @@ module.exports = {
     adminUserController,
     adminPlanController,
     adminVideoController,
-    adminFinanceController
+    adminFinanceController,
+    settingsController,
+    adminSettingsController
 };
