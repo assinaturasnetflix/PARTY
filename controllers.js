@@ -203,15 +203,18 @@ const userController = {
      * @route   GET /api/user/me
      * @access  Private
      */
-    getUserProfile: asyncHandler(async (req, res) => {
-        const user = await User.findById(req.user.id).select('-password');
-        if (user) {
-            res.json(user);
-        } else {
-            res.status(404);
-            throw new Error('Usuário não encontrado.');
-        }
-    }),
+    // VERSÃO CORRIGIDA
+   getUserProfile: asyncHandler(async (req, res) => {
+    const user = await User.findById(req.user.id)
+        .select('-password')
+        .populate('activePlan.planId'); // <-- ADIÇÃO IMPORTANTE AQUI
+    if (user) {
+        res.json(user);
+    } else {
+        res.status(404);
+        throw new Error('Usuário não encontrado.');
+    }
+   }),
 
     /**
      * @desc    Atualizar detalhes do perfil do usuário
