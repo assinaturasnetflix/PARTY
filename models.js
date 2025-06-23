@@ -75,7 +75,7 @@ const userSchema = new Schema({
     // Campo para identificar administradores
     isAdmin: {
         type: Boolean,
-        default: false // Por defeito, ninguém é admin.
+        default: false
     },
 
     // Status e Segurança
@@ -86,7 +86,7 @@ const userSchema = new Schema({
     resetPasswordToken: String,
     resetPasswordExpires: Date,
 
-}, { timestamps: true }); // Adiciona createdAt e updatedAt automaticamente
+}, { timestamps: true });
 
 const User = mongoose.model('User', userSchema);
 
@@ -100,27 +100,27 @@ const planSchema = new Schema({
         unique: true,
         trim: true
     },
-    cost: { // Preço do plano em MT
+    cost: {
         type: Number,
         required: true
     },
-    dailyVideoLimit: { // Quantidade de vídeos por dia
+    dailyVideoLimit: {
         type: Number,
         required: true
     },
-    durationInDays: { // Duração do plano em dias
+    durationInDays: {
         type: Number,
         required: true
     },
-    rewardPerVideo: { // Recompensa por cada vídeo assistido
+    rewardPerVideo: {
         type: Number,
         required: true
     },
-    totalReward: { // Recompensa total (calculada ou inserida)
+    totalReward: {
         type: Number,
         required: true
     },
-    isActive: { // Para o admin poder desativar um plano
+    isActive: {
         type: Boolean,
         default: true
     }
@@ -137,7 +137,7 @@ const videoSchema = new Schema({
         required: true,
         trim: true
     },
-    url: { // URL do vídeo no Cloudinary
+    url: {
         type: String,
         required: true
     },
@@ -145,7 +145,6 @@ const videoSchema = new Schema({
         type: String,
         required: true
     },
-    // O uploader seria o admin que adicionou
     uploader: {
         type: Schema.Types.ObjectId,
         ref: 'User',
@@ -165,22 +164,22 @@ const transactionSchema = new Schema({
         required: true,
         index: true
     },
-    amount: { // Pode ser positivo (ganho) ou negativo (gasto)
+    amount: {
         type: Number,
         required: true
     },
     type: {
         type: String,
         enum: [
-            'signup_bonus',     // Bônus de cadastro
-            'deposit',          // Depósito aprovado
-            'plan_purchase',    // Compra de plano
-            'daily_reward',     // Recompensa por assistir vídeo
-            'referral_plan',    // Bônus de 10% pela compra do plano do indicado
-            'referral_daily',   // Bônus de 5% sobre o ganho diário do indicado
-            'withdrawal',       // Levantamento solicitado (valor fica negativo)
-            'admin_credit',     // Saldo adicionado pelo admin
-            'admin_debit'       // Saldo removido pelo admin
+            'signup_bonus',
+            'deposit',
+            'plan_purchase',
+            'daily_reward',
+            'referral_plan',
+            'referral_daily',
+            'withdrawal',
+            'admin_credit',
+            'admin_debit'
         ],
         required: true
     },
@@ -188,12 +187,12 @@ const transactionSchema = new Schema({
         type: String,
         required: true
     },
-    status: { // Útil para levantamentos
+    status: {
         type: String,
         enum: ['pending', 'completed', 'cancelled'],
         default: 'completed'
     },
-    referenceId: { // ID do documento relacionado (depósito, levantamento, usuário indicado)
+    referenceId: {
         type: Schema.Types.ObjectId,
     }
 }, { timestamps: true });
@@ -218,7 +217,7 @@ const depositSchema = new Schema({
         enum: ['M-Pesa', 'e-Mola'],
         required: true
     },
-    proof: { // Pode ser o texto da mensagem ou a URL da imagem do comprovativo
+    proof: {
         text: String,
         imageUrl: String,
         imageCloudinaryId: String
@@ -229,7 +228,7 @@ const depositSchema = new Schema({
         default: 'pending',
         index: true
     },
-    adminNotes: { // Razão da rejeição, por exemplo
+    adminNotes: {
         type: String
     }
 }, { timestamps: true });
@@ -254,7 +253,7 @@ const withdrawalSchema = new Schema({
         enum: ['M-Pesa', 'e-Mola'],
         required: true
     },
-    phoneNumber: { // Número para onde o valor deve ser enviado
+    phoneNumber: {
         type: String,
         required: true
     },
@@ -271,35 +270,52 @@ const withdrawalSchema = new Schema({
 
 const Withdrawal = mongoose.model('Withdrawal', withdrawalSchema);
 
-
-// --- NOVO CÓDIGO ---
 // ----------------------------------------
-// 7. ESQUEMA DE CONFIGURAÇÕES (Settings)
+// 7. ESQUEMA DE CONFIGURAÇÕES (Settings) - ATUALIZADO
 // ----------------------------------------
 const settingsSchema = new Schema({
-    // Usamos um ID fixo para garantir que haja sempre apenas um documento de configurações
     singletonId: {
         type: String,
         default: 'main_settings',
         unique: true
     },
-    mpesaNumber: {
-        type: String,
-        default: '84 000 0000'
-    },
-    emolaNumber: {
-        type: String,
-        default: '86 000 0000'
-    },
-    depositInstructions: {
-        type: String,
-        default: '1. Envie o valor desejado para um dos números acima.\n2. Preencha o formulário com os detalhes e anexe o comprovativo.'
-    },
+    // Os campos de depósito foram movidos para o novo modelo PaymentMethod
+    // Outras configurações futuras da plataforma podem ser adicionadas aqui.
 }, { timestamps: true });
 
 const Settings = mongoose.model('Settings', settingsSchema);
-// --- FIM DO NOVO CÓDIGO ---
 
+// ----------------------------------------
+// 8. NOVO ESQUEMA: MÉTODOS DE PAGAMENTO (PaymentMethod)
+// ----------------------------------------
+const paymentMethodSchema = new Schema({
+    name: { // Ex: "M-Pesa", "e-Mola", "BCI Transferência"
+        type: String,
+        required: true,
+        trim: true,
+        unique: true
+    },
+    details: { // Ex: O número de telefone "84 123 4567", o NIB, etc.
+        type: String,
+        required: true,
+        trim: true
+    },
+    instructions: { // Ex: "Envie para o NIB...", "Use a referência...", pode estar em branco
+        type: String,
+        trim: true
+    },
+    type: { // Define se o método é para Depósito, Levantamento ou ambos
+        type: String,
+        enum: ['deposit', 'withdrawal', 'both'],
+        required: true
+    },
+    isActive: { // O admin pode ativar ou desativar este método
+        type: Boolean,
+        default: true
+    }
+}, { timestamps: true });
+
+const PaymentMethod = mongoose.model('PaymentMethod', paymentMethodSchema);
 
 // ----------------------------------------
 // EXPORTAÇÃO DE TODOS OS MODELOS
@@ -311,5 +327,6 @@ module.exports = {
     Transaction,
     Deposit,
     Withdrawal,
-    Settings // <-- NOVO MODELO EXPORTADO
+    Settings,
+    PaymentMethod // Adicionado o novo modelo
 };
