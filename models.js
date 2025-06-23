@@ -271,6 +271,36 @@ const withdrawalSchema = new Schema({
 
 const Withdrawal = mongoose.model('Withdrawal', withdrawalSchema);
 
+
+// --- NOVO CÓDIGO ---
+// ----------------------------------------
+// 7. ESQUEMA DE CONFIGURAÇÕES (Settings)
+// ----------------------------------------
+const settingsSchema = new Schema({
+    // Usamos um ID fixo para garantir que haja sempre apenas um documento de configurações
+    singletonId: {
+        type: String,
+        default: 'main_settings',
+        unique: true
+    },
+    mpesaNumber: {
+        type: String,
+        default: '84 000 0000'
+    },
+    emolaNumber: {
+        type: String,
+        default: '86 000 0000'
+    },
+    depositInstructions: {
+        type: String,
+        default: '1. Envie o valor desejado para um dos números acima.\n2. Preencha o formulário com os detalhes e anexe o comprovativo.'
+    },
+}, { timestamps: true });
+
+const Settings = mongoose.model('Settings', settingsSchema);
+// --- FIM DO NOVO CÓDIGO ---
+
+
 // ----------------------------------------
 // EXPORTAÇÃO DE TODOS OS MODELOS
 // ----------------------------------------
@@ -280,5 +310,6 @@ module.exports = {
     Video,
     Transaction,
     Deposit,
-    Withdrawal
+    Withdrawal,
+    Settings // <-- NOVO MODELO EXPORTADO
 };

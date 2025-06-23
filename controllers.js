@@ -6,7 +6,7 @@
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const moment = require('moment-timezone');
-const { User, Plan, Video, Transaction, Deposit, Withdrawal } = require('./models');
+const { User, Plan, Video, Transaction, Deposit, Withdrawal, Settings } = require('./models');
 const { generateToken, sendEmail, createWelcomeEmailHTML, createPasswordResetEmailHTML, cloudinary } = require('./utils');
 const mongoose = require('mongoose');
 
@@ -193,6 +193,25 @@ const authController = {
     }),
 };
 
+
+// ======================================================================================
+//                                SETTINGS CONTROLLER (Público)
+// ======================================================================================
+const settingsController = {
+    /**
+     * @desc    Obter as configurações do site (público)
+     * @route   GET /api/settings
+     * @access  Public
+     */
+    getSettings: asyncHandler(async (req, res) => {
+        // Encontra ou cria o documento de configurações se ele não existir
+        let settings = await Settings.findOne({ singletonId: 'main_settings' });
+        if (!settings) {
+            settings = await Settings.create({});
+        }
+        res.json(settings);
+    }),
+};
 
 // ======================================================================================
 //                                  USER CONTROLLER
@@ -684,7 +703,27 @@ const referralController = {
 // ======================================================================================
 // ======================================================================================
 
-
+// ======================================================================================
+//                                ADMIN SETTINGS CONTROLLER
+// ======================================================================================
+const adminSettingsController = {
+     /**
+     * @desc    Atualizar as configurações do site
+     * @route   PUT /api/admin/settings
+     * @access  Private/Admin
+     */
+    updateSettings: asyncHandler(async (req, res) => {
+        const { mpesaNumber, emolaNumber, depositInstructions } = req.body;
+        
+        const updatedSettings = await Settings.findOneAndUpdate(
+            { singletonId: 'main_settings' },
+            { mpesaNumber, emolaNumber, depositInstructions },
+            { new: true, upsert: true } // new: retorna o doc atualizado, upsert: cria se não existir
+        );
+        
+        res.json(updatedSettings);
+    }),
+};
 // ======================================================================================
 //                                ADMIN DASHBOARD CONTROLLER
 // ======================================================================================
