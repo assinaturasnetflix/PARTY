@@ -1,4 +1,4 @@
-// server.js (VERSÃO FINAL CORRIGIDA)
+// server.js (VERSÃO COM CORS CORRIGIDO)
 
 // -----------------------------------------------
 // 1. IMPORTAÇÃO DE MÓDULOS E CONFIGURAÇÃO INICIAL
@@ -15,10 +15,27 @@ const app = express();
 // -----------------------------------------------
 // 2. CONFIGURAÇÃO DE MIDDLEWARES
 // -----------------------------------------------
-app.use(cors());
+
+// --- CORREÇÃO AQUI ---
+// Configuração explícita do CORS para aceitar qualquer origem e os métodos/cabeçalhos necessários.
+const corsOptions = {
+  origin: '*', // Permite que qualquer frontend aceda à sua API.
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'], // Permite todos os métodos HTTP comuns.
+  allowedHeaders: ['Content-Type', 'Authorization'], // Permite os cabeçalhos que estamos a usar.
+};
+app.use(cors(corsOptions));
+// --- FIM DA CORREÇÃO ---
+
+
+// Middleware para analisar o corpo das requisições como JSON
 app.use(express.json());
+
+// Middleware para analisar corpos de requisição urlencoded (formulários HTML)
 app.use(express.urlencoded({ extended: true }));
+
+// Middleware para servir arquivos estáticos
 app.use('/public', express.static(path.join(__dirname, 'public')));
+
 
 // -----------------------------------------------
 // 3. CONEXÃO COM O BANCO DE DADOS MONGODB ATLAS
@@ -46,7 +63,6 @@ app.use('/api', appRoutes);
 // -----------------------------------------------
 // 5. TRATAMENTO DE ERROS
 // -----------------------------------------------
-// CORREÇÃO ESTAVA AQUI: A importação deve ser de './controllers'
 const { errorHandler } = require('./controllers');
 
 app.use((req, res, next) => {
