@@ -676,7 +676,7 @@ const adminPlanController = {
     deletePlan: asyncHandler(async (req, res) => {
         const plan = await Plan.findById(req.params.planId);
         if (!plan) { res.status(404); throw new Error('Plano não encontrado'); }
-        await plan.remove();
+        await plan.remove()c;
         res.json({ message: 'Plano removido com sucesso.' });
     }),
 };
@@ -695,7 +695,7 @@ const adminVideoController = {
         const video = await Video.findById(req.params.videoId);
         if (!video) { res.status(404); throw new Error('Vídeo não encontrado.'); }
         await cloudinary.uploader.destroy(video.cloudinary_id, { resource_type: 'video' });
-        await video.remove();
+        await video.deleteOne();
         await User.updateMany({}, { $pull: { fullWatchedHistory: video._id } });
         res.json({ message: 'Vídeo removido com sucesso.' });
     }),
